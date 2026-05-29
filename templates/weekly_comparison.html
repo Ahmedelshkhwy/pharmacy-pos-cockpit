@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% macro number(value) -%}
+  {{ "{:,.0f}".format(value or 0) }}
+{%- endmacro %}
+{% macro percent(value) -%}
+  {% if value is none %}New{% else %}{{ "{:+,.1f}%".format(value) }}{% endif %}
+{%- endmacro %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{{ t("weekly_comparison") }}</p>
+    <h1>{% if selected_branch %}{{ selected_branch }} {% if lang == "ar" %}حركة أسبوعية{% else %}weekly movement{% endif %}{% else %}{% if lang == "ar" %}مقارنة أسبوعية حسب الفرع{% else %}Weekly comparison by branch{% endif %}{% endif %}</h1>
+    <p class="subtle">{% if lang == "ar" %}آخر رفع مقارنة بالرفع اللي قبله لنفس الفرع.{% else %}Current upload versus the previous upload for the same branch.{% endif %}</p>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('financial', branch=selected_branch) if selected_branch else url_for('financial') }}">{{ t("financial_panel") }}</a>
+    <a class="button primary" href="{{ url_for('upload') }}">{{ t("upload_excel") }}</a>
+  </div>
+</section>
+
+<form class="filter-bar" method="get" action="{{ url_for('weekly_comparison') }}">
+  <label>
+    <span>{{ t("branch_filter") }}</span>
+    <select name="branch" onchange="this.form.submit()">
+      <option value="all">{{ t("all_branches") }}</option>
+      {% for branch in branch_options %}
+      <option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <a class="button" href="{{ url_for('weekly_comparison') }}">{{ t("reset") }}</a>
+</form>
+
+<section class="metrics">
+  <article><span>{{ number(totals.sales.current) }}</span><p>Current sales</p></article>
+  <article><span>{{ number(totals.stock.current) }}</span><p>Current stock value</p></article>
+  <article><span>{{ number(totals.dead.current) }}</span><p>Dead stock SKUs</p></article>
+  <article><span>{{ number(totals.risk.current) }}</span><p>High risk SKUs</p></article>
+  <article><span>{{ number(totals.lost.current) }}</span><p>Current lost sales</p></article>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Comparison summary</h2>
+    <span class="muted-note">Difference = current minus previous</span>
+  </div>
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>{{ t("branch") }}</th>
+        <th>{{ t("uploads") }}</th>
+        <th>{{ t("current_week") }}</th>
+        <th>{{ t("previous_week") }}</th>
+        {% for key, label, summary_key in metrics %}
+        <th>{{ label }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><a class="item-link" href="{{ url_for('weekly_comparison', branch=row.branch) }}">{{ row.branch }}</a></td>
+        <td>{{ row.upload_count }}</td>
+        <td>{{ row.current_label }}<small>{{ row.current_folder }}</small></td>
+        <td>
+          {{ row.previous_label }}
+          {% if row.previous_folder %}<small>{{ row.previous_folder }}</small>{% endif %}
+        </td>
+        {% for key, label, summary_key in metrics %}
+        {% set item = row.metrics[key] %}
+        <td>
+          <div class="change-cell">
+            <strong>{{ number(item.current) }}</strong>
+            {% if row.has_previous %}
+            <span class="change-pill {{ item.class }}">{{ "{:+,.0f}".format(item.delta) }}</span>
+            <em>{{ percent(item.percent) }}</em>
+            {% else %}
+            <span class="change-pill flat">New</span>
+            <em>No baseline</em>
+            {% endif %}
+          </div>
+        </td>
+        {% endfor %}
+      </tr>
+      {% else %}
+      <tr><td colspan="10" class="empty">No archived POS analysis found. Upload at least two weeks for a branch to see comparison.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="grid two">
+  {% for key, label, summary_key in metrics %}
+  {% set total = totals[key] %}
+  <article class="panel insight-card">
+    <h2>{{ label }}</h2>
+    <p>
+      Current {{ number(total.current) }}.
+      Previous {{ number(total.previous) }}.
+      Change <strong class="text-{{ total.class }}">{{ "{:+,.0f}".format(total.delta) }}</strong>
+      ({{ percent(total.percent) }}).
+    </p>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

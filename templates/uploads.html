@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if lang == "ar" %}سجل الرفع{% else %}Upload Log{% endif %}</p>
+    <h1>{{ t("imports") }}</h1>
+  </div>
+  <a class="button primary" href="{{ url_for('upload') }}">{% if lang == "ar" %}رفع جديد{% else %}New upload{% endif %}</a>
+</section>
+
+<section class="panel">
+  <table>
+    <thead>
+      <tr>
+        <th>{% if lang == "ar" %}وقت الرفع{% else %}Imported at{% endif %}</th>
+        <th>{% if lang == "ar" %}الأسبوع{% else %}Week{% endif %}</th>
+        <th>{{ t("branch") }}</th>
+        <th>{% if lang == "ar" %}الملف{% else %}File{% endif %}</th>
+        <th>{% if lang == "ar" %}الأصناف{% else %}Items{% endif %}</th>
+        <th>{{ t("dead_stock") }}</th>
+        <th>{% if lang == "ar" %}تنبيهات{% else %}Alerts{% endif %}</th>
+        <th>{{ t("slow_moving") }}</th>
+        <th>{{ t("fast_moving") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.uploaded_at }}</td>
+        <td>{{ row.week_date }}</td>
+        <td>{{ row.branch }}</td>
+        <td>{{ row.filename }}</td>
+        <td>{{ row.total_items }}</td>
+        <td>{{ row.dead_count }}</td>
+        <td>{{ row.expiry_count }}</td>
+        <td>{{ row.slow_count }}</td>
+        <td>{{ row.fast_count }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="empty">{% if lang == "ar" %}مفيش عمليات رفع لسه.{% else %}No imports yet.{% endif %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

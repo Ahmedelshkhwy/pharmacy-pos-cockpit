@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ text_dir }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or t("app_name") }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="{{ url_for('index') }}">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48" role="img" focusable="false">
+          <path class="logo-hands" d="M9 29c4 0 6 4 10 4h10c4 0 6-4 10-4" />
+          <path class="logo-bowl" d="M13 30c2 7 7 11 11 11s9-4 11-11" />
+          <path class="logo-cross" d="M21 8h6v8h8v6h-8v8h-6v-8h-8v-6h8z" />
+        </svg>
+      </span>
+      <span class="brand-copy">
+        <strong>{{ t("app_name") }}</strong>
+        <small>{{ t("app_description") }}</small>
+      </span>
+    </a>
+    <nav>
+      <a href="{{ url_for('index') }}">{{ t("dashboard") }}</a>
+      <a href="{{ url_for('report', category='expiry') }}">{{ t("reorder_now") }}</a>
+      <a href="{{ url_for('report', category='dead') }}">{{ t("dead_stock") }}</a>
+      <a href="{{ url_for('report', category='overstock') }}">{{ t("overstock_risk") }}</a>
+      <a href="{{ url_for('report', category='fast') }}">{{ t("fast_moving") }}</a>
+      <a href="{{ url_for('report', category='slow') }}">{{ t("slow_moving") }}</a>
+      <a href="{{ url_for('financial') }}">{{ t("financial_panel") }}</a>
+      <a href="{{ url_for('weekly_comparison') }}">{{ t("weekly_comparison") }}</a>
+      <a href="{{ url_for('upload') }}">{{ t("branch_upload") }}</a>
+      <a href="{{ url_for('uploads') }}">{{ t("imports") }}</a>
+      <a href="{{ url_for('data_management') }}">{{ t("data_management") }}</a>
+      <a href="{{ url_for('change_password') }}">{{ t("password") }}</a>
+      <form class="language-form" method="post" action="{{ url_for('set_language', lang_code=next_lang) }}">
+        <button type="submit">{{ t("language_toggle") }}</button>
+      </form>
+      {% if session.get("user_id") %}
+      <form class="logout-form" method="post" action="{{ url_for('logout') }}">
+        <button type="submit">{{ t("logout") }}</button>
+      </form>
+      {% endif %}
+    </nav>
+  </aside>
+
+  <main class="main">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="messages">
+          {% for category, message in messages %}
+            <div class="message {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

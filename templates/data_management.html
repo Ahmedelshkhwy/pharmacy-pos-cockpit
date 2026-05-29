@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">Data Management</p>
+    <h1>إدارة بيانات الفروع</h1>
+    <p class="subtle">امسح بيانات فرع محدد أو اعمل فورمات لكل بيانات الفروع.</p>
+  </div>
+  <a class="button" href="{{ url_for('uploads') }}">Imports</a>
+</section>
+
+<section class="metrics">
+  <article><span>{{ totals.items }}</span><p>Total SKUs</p></article>
+  <article><span>{{ totals.uploads }}</span><p>Imports</p></article>
+  <article><span>{{ "{:,.0f}".format(totals.stock_value or 0) }}</span><p>Stock value</p></article>
+  <article><span>{{ "{:,.0f}".format(totals.lost_sales_value or 0) }}</span><p>Lost sales 30d</p></article>
+  <article><span>{{ summaries|length }}</span><p>Branches with data</p></article>
+</section>
+
+<section class="grid two danger-grid">
+  <form class="panel form danger-panel" method="post">
+    <input type="hidden" name="mode" value="branch">
+    <div class="wide">
+      <h2>مسح بيانات فرع محدد</h2>
+      <p class="helper-text">سيتم حذف الأصناف وسجل الاستيراد للفرع المختار فقط.</p>
+    </div>
+    <label class="wide">
+      <span>Branch</span>
+      <select name="branch" required>
+        <option value="">Select branch</option>
+        {% for branch in branch_choices %}
+        <option value="{{ branch }}">{{ branch }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="wide checkbox-row">
+      <input type="checkbox" name="delete_files" value="1" checked>
+      <span>امسح ملفات التحليل والملفات الخام المؤرشفة لهذا الفرع</span>
+    </label>
+    <label class="wide">
+      <span>اكتب اسم الفرع للتأكيد، مثال: i-7</span>
+      <input name="confirm" placeholder="i-7" required>
+    </label>
+    <button class="button danger wide" type="submit">Delete selected branch</button>
+  </form>
+
+  <form class="panel form danger-panel" method="post">
+    <input type="hidden" name="mode" value="all">
+    <div class="wide">
+      <h2>فورمات كل بيانات الفروع</h2>
+      <p class="helper-text">سيتم حذف كل الأصناف وكل سجلات الاستيراد لكل الفروع. حسابات الدخول لن تتأثر.</p>
+    </div>
+    <label class="wide checkbox-row">
+      <input type="checkbox" name="delete_files" value="1" checked>
+      <span>امسح كل ملفات التحليل والملفات الخام المؤرشفة</span>
+    </label>
+    <label class="wide">
+      <span>اكتب DELETE ALL للتأكيد</span>
+      <input name="confirm" placeholder="DELETE ALL" required>
+    </label>
+    <button class="button danger wide" type="submit">Format all branch data</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Branch data summary</h2>
+    <a href="{{ url_for('index') }}">Dashboard</a>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Branch</th>
+        <th>SKUs</th>
+        <th>Imports</th>
+        <th>Latest week</th>
+        <th>Stock value</th>
+        <th>Lost sales 30d</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in summaries %}
+      <tr>
+        <td>{{ row.branch }}</td>
+        <td>{{ row.item_count }}</td>
+        <td>{{ row.upload_count }}</td>
+        <td>{{ row.latest_week }}</td>
+        <td>{{ "{:,.0f}".format(row.stock_value or 0) }}</td>
+        <td>{{ "{:,.0f}".format(row.lost_sales_value or 0) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">لا توجد بيانات فروع حالياً.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

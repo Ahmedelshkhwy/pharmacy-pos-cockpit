@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if lang == "ar" %}تقرير قرارات{% else %}Decision report{% endif %}</p>
+    <h1>{{ title }}</h1>
+  </div>
+  <a class="button" href="{{ url_for('export', category=category, branch=selected_branch) if selected_branch else url_for('export', category=category) }}">{{ t("export_csv") }}</a>
+</section>
+
+<form class="filter-bar" method="get" action="{{ url_for('report', category=category) }}">
+  <label>
+    <span>{{ t("branch_filter") }}</span>
+    <select name="branch" onchange="this.form.submit()">
+      <option value="all">{{ t("all_branches") }}</option>
+      {% for branch in branch_options %}
+      <option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <a class="button" href="{{ url_for('report', category=category) }}">{{ t("reset") }}</a>
+</form>
+
+<section class="panel">
+  <table>
+    <thead>
+      <tr>
+        <th>{{ t("risk") }}</th>
+        <th>{{ t("branch") }}</th>
+        <th>{{ t("item") }}</th>
+        <th>{{ t("ref") }}</th>
+        <th>{{ t("sales") }}</th>
+        <th>{{ t("stock") }}</th>
+        <th>Days cover</th>
+        <th>7d out</th>
+        <th>14d out</th>
+        <th>30d out</th>
+        <th>Reorder point</th>
+        <th>Suggested qty</th>
+        <th>{{ t("lost_sales") }}</th>
+        <th>{{ t("frozen_capital") }}</th>
+        <th>{{ t("decision") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><span class="risk-dot {{ row.signal_color }}">{{ row.risk_score }}</span></td>
+        <td>{{ row.branch }}</td>
+        <td><a class="item-link" href="{{ url_for('product_detail', sku=row.sku, branch=row.branch) }}">{{ row.name }}</a></td>
+        <td>{{ row.sku }}</td>
+        <td>{{ row.sold|round(2) }}</td>
+        <td>{{ row.stock|round(2) }}</td>
+        <td>{% if row.days_cover_forecast is not none %}{{ row.days_cover_forecast|round(1) }}{% else %}-{% endif %}</td>
+        <td>{{ "{:.0%}".format(row.stockout_probability_7d or 0) }}</td>
+        <td>{{ "{:.0%}".format(row.stockout_probability_14d or 0) }}</td>
+        <td>{{ "{:.0%}".format(row.stockout_probability_30d or 0) }}</td>
+        <td>{{ row.reorder_point|round(1) }}</td>
+        <td>{{ row.recommended_reorder_qty|round(0) }}</td>
+        <td>{{ "{:,.0f}".format(row.lost_sales_value or 0) }}</td>
+        <td>{{ "{:,.0f}".format(row.frozen_capital_value or 0) }}</td>
+        <td>
+          <strong>{{ row.decision_label or row.action }}</strong>
+          <small>{{ row.tags }}</small>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="15" class="empty">{{ t("no_rows_report") }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

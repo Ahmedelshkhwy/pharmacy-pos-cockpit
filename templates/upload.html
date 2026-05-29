@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if lang == "ar" %}رفع ملفات POS للفرع{% else %}Branch POS raw import{% endif %}</p>
+    <h1>{{ t("branch_upload") }}</h1>
+  </div>
+</section>
+
+<form class="panel form" method="post" enctype="multipart/form-data">
+  <label class="wide">
+    <span>{{ t("branch") }}</span>
+    <select name="branch" required>
+      <option value="">{{ t("select_branch") }}</option>
+      {% for number in range(1, 11) %}
+      <option value="i-{{ number }}">i-{{ number }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label class="wide file-row">
+    <span>Product Activity</span>
+    <input type="file" name="product_activity" accept=".xlsx,.xlsm" required>
+  </label>
+
+  <label class="wide file-row">
+    <span>Stock</span>
+    <input type="file" name="stock" accept=".xlsx,.xlsm" required>
+  </label>
+
+  <label class="wide file-row">
+    <span>Stock Cost</span>
+    <input type="file" name="stock_cost" accept=".xlsx,.xlsm" required>
+  </label>
+
+  <button class="button primary" type="submit">{% if lang == "ar" %}حلّل وارفع بيانات الفرع{% else %}Analyze and import branch{% endif %}</button>
+</form>
+
+<section class="panel">
+  <h2>Movement rule</h2>
+  <p class="helper-text">Export Product Activity from the POS for the latest 90 days. The platform uses 90 days as the sales velocity baseline, then forecasts stockout risk over 7 / 14 / 30 days.</p>
+</section>
+
+<section class="panel">
+  <h2>How files are stored</h2>
+  <div class="path-list">
+    <code>instance/pos_raw/&lt;branch&gt;/&lt;timestamp&gt;/&lt;branch&gt;-PRODUCT ACTIVITY.xlsx</code>
+    <code>instance/pos_raw/&lt;branch&gt;/&lt;timestamp&gt;/&lt;branch&gt;-STOCK.xlsx</code>
+    <code>instance/pos_raw/&lt;branch&gt;/&lt;timestamp&gt;/&lt;branch&gt;-STOCK COST.xlsx</code>
+    <code>instance/pos_analysis/&lt;branch&gt;_&lt;timestamp&gt;/</code>
+  </div>
+</section>
+{% endblock %}

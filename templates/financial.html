@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{{ t("financial_panel") }}</p>
+    <h1>{% if selected_branch %}{{ selected_branch }} {% if lang == "ar" %}تعرض مالي{% else %}financial exposure{% endif %}{% else %}{% if lang == "ar" %}التعرض المالي لكل الفروع{% else %}All branches financial exposure{% endif %}{% endif %}</h1>
+  </div>
+  <a class="button" href="{{ url_for('index', branch=selected_branch) if selected_branch else url_for('index') }}">{{ t("back_to_dashboard") }}</a>
+</section>
+
+<form class="filter-bar" method="get" action="{{ url_for('financial') }}">
+  <label>
+    <span>{{ t("branch_filter") }}</span>
+    <select name="branch" onchange="this.form.submit()">
+      <option value="all">{{ t("all_branches") }}</option>
+      {% for branch in branch_options %}
+      <option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <a class="button" href="{{ url_for('financial') }}">{{ t("reset") }}</a>
+</form>
+
+<section class="metrics">
+  <article><span>{{ "{:,.0f}".format(totals.dead_value or 0) }}</span><p>{% if lang == "ar" %}رأس مال راكد{% else %}Dead capital SAR{% endif %}</p></article>
+  <article><span>{{ "{:,.0f}".format(totals.lost_sales_value or 0) }}</span><p>{{ t("lost_sales") }}</p></article>
+  <article><span>{{ "{:,.0f}".format(totals.overstock_value or 0) }}</span><p>{{ t("overstock_risk") }}</p></article>
+  <article><span>{{ "{:,.0f}".format(totals.frozen_capital_value or 0) }}</span><p>{{ t("frozen_capital") }}</p></article>
+  <article><span>{{ totals.high_risk_count or 0 }}</span><p>{{ t("high_risk") }}</p></article>
+</section>
+
+<section class="grid two chart-grid">
+  <div class="panel chart-panel">
+    <div class="panel-head">
+      <h2>Branch exposure comparison</h2>
+      <div class="segmented" data-chart-metric>
+        <button class="active" type="button" data-metric="exposure">Total</button>
+        <button type="button" data-metric="lostSales">Lost sales</button>
+        <button type="button" data-metric="frozenCapital">Frozen</button>
+      </div>
+    </div>
+    <div class="chart-box">
+      <svg id="branchBarChart" viewBox="0 0 760 340" role="img" aria-label="Branch financial exposure bar chart"></svg>
+      <div id="branchChartTip" class="chart-tip"></div>
+    </div>
+  </div>
+
+  <div class="panel chart-panel">
+    <div class="panel-head">
+      <h2>Exposure by category</h2>
+    </div>
+    <div class="chart-box split-chart">
+      <svg id="categoryDonutChart" viewBox="0 0 380 320" role="img" aria-label="Category exposure donut chart"></svg>
+      <div id="categoryLegend" class="chart-legend"></div>
+      <div id="categoryChartTip" class="chart-tip"></div>
+    </div>
+  </div>
+</section>
+
+<section class="panel chart-panel">
+  <div class="panel-head">
+    <h2>Historical trend</h2>
+    <div class="segmented" data-trend-metric>
+      <button class="active" type="button" data-metric="exposure">Exposure</button>
+      <button type="button" data-metric="lostSales">Lost sales</button>
+      <button type="button" data-metric="highRisk">High risk</button>
+    </div>
+  </div>
+  <div class="chart-box">
+    <svg id="trendLineChart" viewBox="0 0 940 320" role="img" aria-label="Historical financial trend line chart"></svg>
+    <div id="trendChartTip" class="chart-tip"></div>
+  </div>
+</section>
+
+<section class="grid two">
+  <div class="panel">
+    <div class="panel-head"><h2>Exposure by branch</h2></div>
+    <div class="bar-list">
+      {% for row in branch_rows %}
+      {% set exposure = (row.lost_sales_value or 0) + (row.frozen_capital_value or 0) %}
+      <a class="bar-row" href="{{ url_for('index', branch=row.branch) }}">
+        <span>{{ row.branch }}</span>
+        <strong>{{ "{:,.0f}".format(exposure) }} SAR</strong>
+        <i style="width: {{ (exposure / max_branch_exposure * 100)|round(1) }}%"></i>
+      </a>
+      {% else %}
+      <p class="empty">No branch data.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Exposure by category</h2></div>
+    <div class="bar-list">
+      {% for row in category_rows %}
+      {% set exposure = (row.lost_sales_value or 0) + (row.frozen_capital_value or 0) %}
+      <div class="bar-row">
+        <span>{{ row.category }}</span>
+        <strong>{{ "{:,.0f}".format(exposure) }} SAR</strong>
+        <i style="width: {{ (exposure / max_category_exposure * 100)|round(1) }}%"></i>
+      </div>
+      {% else %}
+      <p class="empty">No category data.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="grid two">
+  <article class="panel insight-card">
+    <h2>Dead Capital Card</h2>
+    <p>{{ "{:,.0f}".format(totals.dead_value or 0) }} SAR is locked in stock that recorded zero POS sales. Action: discount, bundle, transfer, or return.</p>
+  </article>
+  <article class="panel insight-card">
+    <h2>Lost Sales Card</h2>
+    <p>{{ "{:,.0f}".format(totals.lost_sales_value or 0) }} SAR is estimated as 30-day missed demand from stockouts. Action: buy or transfer now.</p>
+  </article>
+  <article class="panel insight-card">
+    <h2>Overstock Exposure Card</h2>
+    <p>{{ "{:,.0f}".format(totals.overstock_value or 0) }} SAR is tied to excessive cover. Action: stop buying and push offers/transfers.</p>
+  </article>
+  <article class="panel insight-card">
+    <h2>Stockout Risk Card</h2>
+    <p>{{ totals.high_risk_count or 0 }} SKUs are red-risk. Action: review the High Risk Score report before placing purchase orders.</p>
+  </article>
+</section>
+
+<script>
+  window.financialCharts = {
+    branches: {{ branch_chart|tojson }},
+    categories: {{ category_chart|tojson }},
+    trends: {{ trend_chart|tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='financial_charts.js') }}"></script>
+{% endblock %}

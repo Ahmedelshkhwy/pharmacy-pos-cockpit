@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if lang == "ar" %}تفاصيل الصنف{% else %}Product drill-down{% endif %}</p>
+    <h1>{{ product_name }}</h1>
+    <p class="subtle">Ref: {{ sku }}</p>
+  </div>
+  <a class="button" href="{{ url_for('report', category='risk', branch=selected_branch) if selected_branch else url_for('report', category='risk') }}">{{ t("back_to_reports") }}</a>
+</section>
+
+<form class="filter-bar" method="get" action="{{ url_for('product_detail', sku=sku) }}">
+  <label>
+    <span>{{ t("branch_filter") }}</span>
+    <select name="branch" onchange="this.form.submit()">
+      <option value="all">{{ t("all_branches") }}</option>
+      {% for branch in branch_options %}
+      <option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <a class="button" href="{{ url_for('product_detail', sku=sku) }}">{{ t("reset") }}</a>
+</form>
+
+<section class="metrics">
+  {% set main = current_rows[0] if current_rows else none %}
+  <article><span>{{ main.risk_score if main else "-" }}</span><p>{{ t("risk") }}</p></article>
+  <article><span>{{ "{:,.0f}".format(main.sold or 0) if main else "0" }}</span><p>{{ t("sales") }}</p></article>
+  <article><span>{{ "{:,.0f}".format(main.stock or 0) if main else "0" }}</span><p>{{ t("stock") }}</p></article>
+  <article><span>{{ "{:,.2f}".format(main.cost_price or 0) if main else "0.00" }}</span><p>Cost price SAR</p></article>
+  <article><span>{{ "{:,.0f}".format(main.stock_value or 0) if main else "0" }}</span><p>{{ t("stock_value") }}</p></article>
+</section>
+
+<section class="grid two">
+  <article class="panel insight-card">
+    <h2>Detailed recommendation</h2>
+    {% if main %}
+    <p><strong>{{ main.decision_label or main.action }}</strong></p>
+    <p>{{ main.action or "Decision is generated from stockout probability, movement velocity, stock value, and current stock position." }}</p>
+    <div class="chips">
+      <span>{{ main.tags }}</span>
+      <span>30d stockout: {{ "{:.0%}".format(main.stockout_probability_30d or 0) }}</span>
+      <span>Suggested qty: {{ main.recommended_reorder_qty|round(0) }}</span>
+    </div>
+    {% else %}
+    <p>No current branch data found for this product.</p>
+    {% endif %}
+  </article>
+
+  <article class="panel insight-card">
+    <h2>Inventory economics</h2>
+    {% if main %}
+    <p>Current stock is worth {{ "{:,.0f}".format(main.stock_value or 0) }} SAR at sale price and {{ "{:,.0f}".format(main.cost_value or 0) }} SAR at cost.</p>
+    <p>Estimated lost sales exposure is {{ "{:,.0f}".format(main.lost_sales_value or 0) }} SAR, while frozen capital exposure is {{ "{:,.0f}".format(main.frozen_capital_value or 0) }} SAR.</p>
+    {% else %}
+    <p>No current valuation available.</p>
+    {% endif %}
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2>{% if lang == "ar" %}مقارنة بين الفروع{% else %}Branch comparison{% endif %}</h2></div>
+  <div class="bar-list">
+    {% for row in comparison_rows %}
+    <a class="bar-row" href="{{ url_for('product_detail', sku=sku, branch=row.branch) }}">
+      <span>{{ row.branch }} · sales {{ row.sold|round(1) }} · risk {{ row.risk_score }}</span>
+      <strong>{{ row.stock|round(1) }} units</strong>
+      <i style="width: {{ ((row.stock or 0) / max_branch_stock * 100)|round(1) }}%"></i>
+    </a>
+    {% else %}
+    <p class="empty">No branch comparison available.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2>{% if lang == "ar" %}تاريخ المبيعات عبر الرفعات{% else %}Sales history across uploads{% endif %}</h2></div>
+  <table>
+    <thead>
+      <tr>
+        <th>{{ t("uploads") }}</th><th>{{ t("branch") }}</th><th>{{ t("sales") }}</th><th>{{ t("stock") }}</th><th>Sale price</th><th>Cost</th><th>{{ t("stock_value") }}</th><th>{{ t("risk") }}</th><th>{{ t("decision") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in history_rows %}
+      <tr>
+        <td>{{ row.label }}<small>{{ row.folder }}</small></td>
+        <td>{{ row.branch }}</td>
+        <td>
+          <div class="inline-bar"><i style="width: {{ ((row.sold or 0) / max_history_sales * 100)|round(1) }}%"></i><span>{{ row.sold|round(2) }}</span></div>
+        </td>
+        <td>{{ row.stock|round(2) }}</td>
+        <td>{{ "{:,.2f}".format(row.sales_price or 0) }}</td>
+        <td>{{ "{:,.2f}".format(row.cost_price or 0) }}</td>
+        <td>{{ "{:,.0f}".format(row.stock_value or 0) }}</td>
+        <td>{{ row.risk_score }}</td>
+        <td>{{ row.decision_label }}<small>{{ row.tags }}</small></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="empty">No historical rows found for this SKU.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
