@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: pharmacy-pos-cockpit
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PHARMACY_SECRET_KEY
+        generateValue: true
+      - key: PHARMACY_ADMIN_USERNAME
+        value: admin
+      - key: PHARMACY_ADMIN_PASSWORD
+        sync: false
