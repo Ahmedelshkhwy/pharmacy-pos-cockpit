@@ -1,69 +1,81 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="page-head">
+<section class="page-head dashboard-head">
   <div>
     <p class="eyebrow">{{ t("app_name") }}</p>
-    <h1>{% if selected_branch %}{{ selected_branch }} {% if lang == "ar" %}لوحة الفرع{% else %}branch dashboard{% endif %}{% else %}{% if lang == "ar" %}مركز المتابعة العام{% else %}General command center{% endif %}{% endif %}</h1>
+    <h1>{% if selected_branch %}{{ selected_branch }} {{ t("branch_dashboard") }}{% else %}{{ t("command_center") }}{% endif %}</h1>
+    <p class="subtle">{{ t("app_description") }}</p>
   </div>
   <div class="actions">
+    <form class="header-filter" method="get" action="{{ url_for('index') }}">
+      <label>
+        <span>{{ t("branch_filter") }}</span>
+        <select name="branch" onchange="this.form.submit()">
+          <option value="all">{{ t("all_branches") }}</option>
+          {% for branch in branch_options %}
+          <option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </form>
+    <a class="button" href="{{ url_for('index') }}">{{ t("reset") }}</a>
+    <a class="button" href="{{ url_for('weekly_comparison', branch=selected_branch) if selected_branch else url_for('weekly_comparison') }}">{{ t("weekly_comparison") }}</a>
     <a class="button" href="{{ url_for('financial', branch=selected_branch) if selected_branch else url_for('financial') }}">{{ t("financial_panel") }}</a>
     <a class="button primary" href="{{ url_for('upload') }}">{{ t("upload_excel") }}</a>
   </div>
 </section>
 
-<form class="filter-bar" method="get" action="{{ url_for('index') }}">
-  <label>
-    <span>{{ t("branch_filter") }}</span>
-    <select name="branch" onchange="this.form.submit()">
-      <option value="all">{{ t("all_branches") }}</option>
-      {% for branch in branch_options %}
-      <option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  <a class="button" href="{{ url_for('index') }}">{{ t("reset") }}</a>
-</form>
-
-<section class="metrics">
+<section class="metrics executive-metrics">
   <article><span>{{ stats.total_items or 0 }}</span><p>{% if lang == "ar" %}إجمالي الأصناف{% else %}Total SKUs{% endif %}</p></article>
-  <article><span>{{ stats.high_risk_count or 0 }}</span><p>{{ t("high_risk") }}</p></article>
+  <article class="metric-danger"><span>{{ stats.high_risk_count or 0 }}</span><p>{{ t("high_risk") }}</p></article>
   <article><span>{{ "{:,.0f}".format(stats.lost_sales_value or 0) }}</span><p>{{ t("lost_sales") }} 30d</p></article>
   <article><span>{{ "{:,.0f}".format(stats.frozen_capital_value or 0) }}</span><p>{{ t("frozen_capital") }}</p></article>
   <article><span>{{ "{:,.0f}".format(stats.reorder_qty_total or 0) }}</span><p>{% if lang == "ar" %}كمية الشراء المقترحة{% else %}Suggested reorder units{% endif %}</p></article>
 </section>
 
-<section class="decision-strip">
-  <a href="{{ url_for('report', category='expiry', branch=selected_branch) if selected_branch else url_for('report', category='expiry') }}">
-    <strong>Buy or transfer now</strong>
-    <span>{{ stats.expiry_count or 0 }} items sold while stock is zero. Prioritize by lost sales.</span>
+<section class="section-head">
+  <div>
+    <p class="eyebrow">{{ t("decision_queue") }}</p>
+    <h2>{{ t("priority_actions") }}</h2>
+  </div>
+</section>
+
+<section class="decision-strip decision-cards">
+  <a class="decision-card danger" href="{{ url_for('report', category='expiry', branch=selected_branch) if selected_branch else url_for('report', category='expiry') }}">
+    <span class="decision-kicker">{{ stats.expiry_count or 0 }}</span>
+    <strong>{% if lang == "ar" %}اشتري أو حوّل دلوقتي{% else %}Buy or transfer now{% endif %}</strong>
+    <span>{% if lang == "ar" %}أصناف عليها مبيعات والمخزون صفر. رتّبها حسب المبيعات الضايعة.{% else %}Items sold while stock is zero. Prioritize by lost sales.{% endif %}</span>
   </a>
-  <a href="{{ url_for('report', category='risk', branch=selected_branch) if selected_branch else url_for('report', category='risk') }}">
-    <strong>Review red risks</strong>
-    <span>{{ stats.high_risk_count or 0 }} items scored 8-10 and need same-day action.</span>
+  <a class="decision-card danger" href="{{ url_for('report', category='risk', branch=selected_branch) if selected_branch else url_for('report', category='risk') }}">
+    <span class="decision-kicker">{{ stats.high_risk_count or 0 }}</span>
+    <strong>{% if lang == "ar" %}راجع الأحمر النهارده{% else %}Review red risks{% endif %}</strong>
+    <span>{% if lang == "ar" %}أصناف خطورتها عالية ومحتاجة قرار سريع قبل ما تعمل فجوة بيع.{% else %}Items scored 8-10 and need same-day action.{% endif %}</span>
   </a>
-  <a href="{{ url_for('report', category='dead', branch=selected_branch) if selected_branch else url_for('report', category='dead') }}">
-    <strong>Clear dead money</strong>
-    <span>{{ "{:,.0f}".format(stats.dead_value or 0) }} value locked in no-sale stock.</span>
+  <a class="decision-card warn" href="{{ url_for('report', category='dead', branch=selected_branch) if selected_branch else url_for('report', category='dead') }}">
+    <span class="decision-kicker">{{ "{:,.0f}".format(stats.dead_value or 0) }}</span>
+    <strong>{% if lang == "ar" %}فك فلوس راكدة{% else %}Clear dead money{% endif %}</strong>
+    <span>{% if lang == "ar" %}قيمة متجمّدة في أصناف مفيهاش بيع. اعمل عرض، تحويل، أو مرتجع.{% else %}Value locked in no-sale stock. Discount, transfer, or return.{% endif %}</span>
   </a>
-  <a href="{{ url_for('report', category='overstock', branch=selected_branch) if selected_branch else url_for('report', category='overstock') }}">
-    <strong>Stop buying</strong>
-    <span>{{ stats.overstock_count or 0 }} items have excessive days of cover.</span>
+  <a class="decision-card calm" href="{{ url_for('report', category='overstock', branch=selected_branch) if selected_branch else url_for('report', category='overstock') }}">
+    <span class="decision-kicker">{{ stats.overstock_count or 0 }}</span>
+    <strong>{% if lang == "ar" %}وقّف شراء الزيادة{% else %}Stop buying{% endif %}</strong>
+    <span>{% if lang == "ar" %}أصناف عندها تغطية زيادة. ادفعها بعرض أو انقلها لفرع محتاج.{% else %}Items have excessive cover. Promote or transfer before buying more.{% endif %}</span>
   </a>
 </section>
 
 <section class="grid two">
-  <div class="panel">
+  <div class="panel priority-panel">
     <div class="panel-head">
-      <h2>Highest risk score</h2>
-      <a href="{{ url_for('report', category='risk', branch=selected_branch) if selected_branch else url_for('report', category='risk') }}">View all</a>
+      <h2>{{ t("highest_risk") }}</h2>
+      <a href="{{ url_for('report', category='risk', branch=selected_branch) if selected_branch else url_for('report', category='risk') }}">{{ t("view_all") }}</a>
     </div>
     {% set rows = top_risk %}
     {% include "_mini_table.html" %}
   </div>
-  <div class="panel">
+  <div class="panel priority-panel">
     <div class="panel-head">
-      <h2>Urgent reorder candidates</h2>
-      <a href="{{ url_for('report', category='expiry', branch=selected_branch) if selected_branch else url_for('report', category='expiry') }}">View all</a>
+      <h2>{{ t("urgent_reorder") }}</h2>
+      <a href="{{ url_for('report', category='expiry', branch=selected_branch) if selected_branch else url_for('report', category='expiry') }}">{{ t("view_all") }}</a>
     </div>
     {% set rows = top_expiry %}
     {% include "_mini_table.html" %}
@@ -71,18 +83,18 @@
 </section>
 
 <section class="grid two">
-  <div class="panel">
+  <div class="panel priority-panel">
     <div class="panel-head">
-      <h2>Highest frozen capital</h2>
-      <a href="{{ url_for('report', category='dead', branch=selected_branch) if selected_branch else url_for('report', category='dead') }}">View all</a>
+      <h2>{{ t("highest_frozen") }}</h2>
+      <a href="{{ url_for('report', category='dead', branch=selected_branch) if selected_branch else url_for('report', category='dead') }}">{{ t("view_all") }}</a>
     </div>
     {% set rows = top_dead %}
     {% include "_mini_table.html" %}
   </div>
-  <div class="panel">
+  <div class="panel priority-panel">
     <div class="panel-head">
-      <h2>Fast moving winners</h2>
-      <a href="{{ url_for('report', category='fast', branch=selected_branch) if selected_branch else url_for('report', category='fast') }}">View all</a>
+      <h2>{{ t("fast_winners") }}</h2>
+      <a href="{{ url_for('report', category='fast', branch=selected_branch) if selected_branch else url_for('report', category='fast') }}">{{ t("view_all") }}</a>
     </div>
     {% set rows = top_fast %}
     {% include "_mini_table.html" %}
@@ -91,23 +103,34 @@
 
 <section class="panel">
   <div class="panel-head">
-    <h2>Latest import</h2>
-    <a href="{{ url_for('uploads') }}">History</a>
+    <h2>{{ t("latest_import") }}</h2>
+    <a href="{{ url_for('uploads') }}">{{ t("history") }}</a>
   </div>
   <table>
-    <thead><tr><th>Imported at</th><th>Branch</th><th>Source</th><th>SKUs</th><th>Dead</th><th>Decision alerts</th></tr></thead>
+    <thead>
+      <tr>
+        <th>{% if lang == "ar" %}وقت الرفع{% else %}Imported at{% endif %}</th>
+        <th>{{ t("branch") }}</th>
+        <th>{% if lang == "ar" %}المصدر{% else %}Source{% endif %}</th>
+        <th>{% if lang == "ar" %}الفترة{% else %}Period{% endif %}</th>
+        <th>SKUs</th>
+        <th>{{ t("dead_stock") }}</th>
+        <th>{% if lang == "ar" %}تنبيهات القرار{% else %}Decision alerts{% endif %}</th>
+      </tr>
+    </thead>
     <tbody>
       {% for upload in uploads %}
       <tr>
         <td>{{ upload.uploaded_at }}</td>
         <td>{{ upload.branch }}</td>
         <td>{{ upload.filename }}</td>
+        <td>{{ upload.analysis_period_days or 90 }}d</td>
         <td>{{ upload.total_items }}</td>
         <td>{{ upload.dead_count }}</td>
         <td>{{ upload.expiry_count }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="6" class="empty">No POS data imported yet.</td></tr>
+      <tr><td colspan="7" class="empty">{% if lang == "ar" %}مفيش بيانات POS مرفوعة لسه.{% else %}No POS data imported yet.{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>

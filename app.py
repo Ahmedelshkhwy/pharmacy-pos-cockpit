@@ -29,6 +29,7 @@ DB_PATH = DATA_DIR / "pharmacy.db"
 BRANCH_TEMPLATE_PATH = BASE_DIR / "pharmacy_branch_upload_template.xlsx"
 
 ALLOWED_EXTENSIONS = {".xlsx", ".xlsm"}
+ALLOWED_ANALYSIS_PERIOD_DAYS = (30, 90, 120)
 DEAD_STOCK_MAX_SALES = 0
 SLOW_MOVING_RATIO = 0.05
 EXPIRY_WARNING_DAYS = 90
@@ -51,13 +52,28 @@ ITEM_EXTRA_COLUMNS = {
     "decision_label": "TEXT NOT NULL DEFAULT 'Healthy'",
     "lost_sales_value": "REAL NOT NULL DEFAULT 0",
     "frozen_capital_value": "REAL NOT NULL DEFAULT 0",
+    "unit_profit": "REAL NOT NULL DEFAULT 0",
+    "gross_margin_percent": "REAL NOT NULL DEFAULT 0",
+    "break_even_price": "REAL NOT NULL DEFAULT 0",
+    "max_safe_discount_percent": "REAL NOT NULL DEFAULT 0",
+    "suggested_offer_price": "REAL NOT NULL DEFAULT 0",
+    "offer_discount_percent": "REAL NOT NULL DEFAULT 0",
+    "offer_profit_per_unit": "REAL NOT NULL DEFAULT 0",
+    "offer_profit_if_sold": "REAL NOT NULL DEFAULT 0",
     "signal_color": "TEXT NOT NULL DEFAULT 'green'",
+}
+
+UPLOAD_EXTRA_COLUMNS = {
+    "analysis_period_days": "INTEGER NOT NULL DEFAULT 90",
 }
 
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("PHARMACY_SECRET_KEY", "change-this-secret-key")
 app.config["MAX_CONTENT_LENGTH"] = 24 * 1024 * 1024
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.jinja_env.auto_reload = True
 
 POS_UPLOAD_FILES = {
     "product_activity": "PRODUCT ACTIVITY",
@@ -92,6 +108,20 @@ TRANSLATIONS = {
         "data_management": "Data Management",
         "password": "Password",
         "logout": "Logout",
+        "decision_queue": "Decision Queue",
+        "analysis": "Analysis",
+        "operations": "Operations",
+        "admin": "Admin",
+        "view_all": "View all",
+        "history": "History",
+        "command_center": "General command center",
+        "branch_dashboard": "branch dashboard",
+        "priority_actions": "Priority actions",
+        "highest_risk": "Highest risk score",
+        "urgent_reorder": "Urgent reorder candidates",
+        "highest_frozen": "Highest frozen capital",
+        "fast_winners": "Fast moving winners",
+        "latest_import": "Latest import",
         "login": "Login",
         "username": "Username",
         "current_password": "Current password",
@@ -142,6 +172,20 @@ TRANSLATIONS = {
         "data_management": "إدارة البيانات",
         "password": "كلمة المرور",
         "logout": "خروج",
+        "decision_queue": "قرارات مهمة",
+        "analysis": "تحليلات",
+        "operations": "تشغيل",
+        "admin": "إدارة",
+        "view_all": "شوف الكل",
+        "history": "السجل",
+        "command_center": "مركز المتابعة العام",
+        "branch_dashboard": "لوحة الفرع",
+        "priority_actions": "قرارات محتاجة حركة",
+        "highest_risk": "أعلى درجات خطورة",
+        "urgent_reorder": "أصناف محتاجة شراء أو تحويل",
+        "highest_frozen": "أكبر فلوس متجمّدة",
+        "fast_winners": "أصناف سريعة ومهمة",
+        "latest_import": "آخر رفع",
         "login": "تسجيل الدخول",
         "username": "اسم المستخدم",
         "current_password": "كلمة المرور الحالية",
@@ -214,6 +258,7 @@ def init_db() -> None:
                 week_date TEXT NOT NULL,
                 filename TEXT NOT NULL,
                 uploaded_at TEXT NOT NULL,
+                analysis_period_days INTEGER NOT NULL DEFAULT 90,
                 total_items INTEGER NOT NULL,
                 dead_count INTEGER NOT NULL,
                 expiry_count INTEGER NOT NULL,
@@ -253,6 +298,14 @@ def init_db() -> None:
                 decision_label TEXT NOT NULL DEFAULT 'Healthy',
                 lost_sales_value REAL NOT NULL DEFAULT 0,
                 frozen_capital_value REAL NOT NULL DEFAULT 0,
+                unit_profit REAL NOT NULL DEFAULT 0,
+                gross_margin_percent REAL NOT NULL DEFAULT 0,
+                break_even_price REAL NOT NULL DEFAULT 0,
+                max_safe_discount_percent REAL NOT NULL DEFAULT 0,
+                suggested_offer_price REAL NOT NULL DEFAULT 0,
+                offer_discount_percent REAL NOT NULL DEFAULT 0,
+                offer_profit_per_unit REAL NOT NULL DEFAULT 0,
+                offer_profit_if_sold REAL NOT NULL DEFAULT 0,
                 signal_color TEXT NOT NULL DEFAULT 'green',
                 FOREIGN KEY(upload_id) REFERENCES uploads(id) ON DELETE CASCADE
             );
@@ -269,6 +322,10 @@ def init_db() -> None:
         for column, definition in ITEM_EXTRA_COLUMNS.items():
             if column not in existing_item_columns:
                 db.execute(f"ALTER TABLE items ADD COLUMN {column} {definition}")
+        existing_upload_columns = {row["name"] for row in db.execute("PRAGMA table_info(uploads)").fetchall()}
+        for column, definition in UPLOAD_EXTRA_COLUMNS.items():
+            if column not in existing_upload_columns:
+                db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
         user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             db.execute(
@@ -357,6 +414,14 @@ def parse_date(value: Any) -> date | None:
         except ValueError:
             continue
     return None
+
+
+def parse_analysis_period_days(value: Any) -> int | None:
+    try:
+        period = int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return period if period > 0 else None
 
 
 def extract_branch_name(filename: str) -> str:
@@ -454,7 +519,13 @@ def classify_rows(rows: list[ParsedRow]) -> list[dict[str, Any]]:
     return analyzed
 
 
-def save_upload(filename: str, branch: str, week_date: str, rows: list[dict[str, Any]]) -> int:
+def save_upload(
+    filename: str,
+    branch: str,
+    week_date: str,
+    rows: list[dict[str, Any]],
+    analysis_period_days: int = 90,
+) -> int:
     counts = {
         "dead": sum("راكد" in r["tags"] for r in rows),
         "expiry": sum("قرب انتهاء" in r["tags"] for r in rows),
@@ -465,14 +536,15 @@ def save_upload(filename: str, branch: str, week_date: str, rows: list[dict[str,
         cursor = db.execute(
             """
             INSERT INTO uploads
-            (branch, week_date, filename, uploaded_at, total_items, dead_count, expiry_count, slow_count, fast_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, expiry_count, slow_count, fast_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 branch,
                 week_date,
                 filename,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                analysis_period_days,
                 len(rows),
                 counts["dead"],
                 counts["expiry"],
@@ -590,6 +662,14 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False) -> int:
                     "decision_label": row.get("decision_label") or "Healthy",
                     "lost_sales_value": parse_num(row.get("lost_sales_value")),
                     "frozen_capital_value": parse_num(row.get("frozen_capital_value")),
+                    "unit_profit": parse_num(row.get("unit_profit")),
+                    "gross_margin_percent": parse_num(row.get("gross_margin_percent")),
+                    "break_even_price": parse_num(row.get("break_even_price")),
+                    "max_safe_discount_percent": parse_num(row.get("max_safe_discount_percent")),
+                    "suggested_offer_price": parse_num(row.get("suggested_offer_price")),
+                    "offer_discount_percent": parse_num(row.get("offer_discount_percent")),
+                    "offer_profit_per_unit": parse_num(row.get("offer_profit_per_unit")),
+                    "offer_profit_if_sold": parse_num(row.get("offer_profit_if_sold")),
                     "signal_color": row.get("signal_color") or "green",
                     "expiry": "",
                     "days_left": None,
@@ -619,14 +699,15 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False) -> int:
         cursor = db.execute(
             """
             INSERT INTO uploads
-            (branch, week_date, filename, uploaded_at, total_items, dead_count, expiry_count, slow_count, fast_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, expiry_count, slow_count, fast_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 branch,
                 week_date,
                 source_file,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                parse_int(metadata.get("period_days"), default=90),
                 len(rows),
                 counts["dead"],
                 counts["stockout"] + counts["overstock"],
@@ -641,8 +722,10 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False) -> int:
             (upload_id, branch, week_date, name, category, sku, sold, stock, price, cost_price, stock_value, cost_value, turnover_ratio,
              expiry, days_left, tags, urgency, action, reason, avg_daily_sales, days_cover_forecast,
              stockout_probability_7d, stockout_probability_14d, stockout_probability_30d, reorder_point,
-             recommended_reorder_qty, risk_score, decision_label, lost_sales_value, frozen_capital_value, signal_color)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             recommended_reorder_qty, risk_score, decision_label, lost_sales_value, frozen_capital_value,
+             unit_profit, gross_margin_percent, break_even_price, max_safe_discount_percent,
+             suggested_offer_price, offer_discount_percent, offer_profit_per_unit, offer_profit_if_sold, signal_color)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -676,6 +759,14 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False) -> int:
                     row["decision_label"],
                     row["lost_sales_value"],
                     row["frozen_capital_value"],
+                    row["unit_profit"],
+                    row["gross_margin_percent"],
+                    row["break_even_price"],
+                    row["max_safe_discount_percent"],
+                    row["suggested_offer_price"],
+                    row["offer_discount_percent"],
+                    row["offer_profit_per_unit"],
+                    row["offer_profit_if_sold"],
                     row["signal_color"],
                 )
                 for row in rows
@@ -824,7 +915,7 @@ def fetch_items(category: str = "all", limit: int | None = None, branch: str | N
     elif category == "slow":
         conditions.append("tags LIKE ?")
         params.append("%slow_moving%")
-        order = "stock_value DESC"
+        order = "cost_value DESC, days_cover_forecast DESC, stock_value DESC"
     elif category == "fast":
         conditions.append("tags LIKE ?")
         params.append("%fast_moving%")
@@ -903,11 +994,21 @@ def index() -> str:
 @login_required
 def upload() -> str | Response:
     if request.method == "GET":
-        return render_template("upload.html")
+        return render_template("upload.html", analysis_period_options=ALLOWED_ANALYSIS_PERIOD_DAYS)
 
     branch = normalize_branch_name(request.form.get("branch", ""))
     if not re.fullmatch(r"i-(?:[1-9]|10)", branch):
         flash("Choose a branch from i-1 to i-10.", "error")
+        return redirect(url_for("upload"))
+
+    analysis_period_mode = str(request.form.get("analysis_period_mode", "")).strip()
+    analysis_period_days = (
+        parse_analysis_period_days(request.form.get("analysis_period_days_custom"))
+        if analysis_period_mode == "custom"
+        else parse_analysis_period_days(analysis_period_mode)
+    )
+    if analysis_period_days is None:
+        flash("Choose 30, 90, 120, or enter a custom positive number of days.", "error")
         return redirect(url_for("upload"))
 
     files = {key: request.files.get(key) for key in POS_UPLOAD_FILES}
@@ -935,13 +1036,30 @@ def upload() -> str | Response:
         saved_files.append(saved_name)
 
     try:
-        analysis_dir = analyze_pos_exports(raw_dir, POS_ANALYSIS_DIR, prefix=f"{branch}-", branch_override=branch)
+        analysis_dir = analyze_pos_exports(
+            raw_dir,
+            POS_ANALYSIS_DIR,
+            prefix=f"{branch}-",
+            branch_override=branch,
+            movement_period_days_override=analysis_period_days,
+        )
+        summary_path = analysis_dir / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        metadata = summary.get("metadata", {})
+        actual_period_days = int(metadata.get("actual_export_period_days") or 0)
+        if actual_period_days != analysis_period_days:
+            raise ValueError(
+                f"Product Activity export covers {actual_period_days} days, but you selected {analysis_period_days} days."
+            )
         imported_count = import_pos_analysis_to_db(analysis_dir, replace_all=False)
     except Exception as exc:
         flash(f"Could not analyze POS files: {exc}", "error")
         return redirect(url_for("upload"))
 
-    flash(f"Imported {imported_count} POS rows for {branch}. Raw files archived in {raw_dir}.", "success")
+    flash(
+        f"Imported {imported_count} POS rows for {branch} using a {analysis_period_days}-day analysis window. Raw files archived in {raw_dir}.",
+        "success",
+    )
     return redirect(url_for("index"))
 
 
@@ -1413,9 +1531,10 @@ def data_management() -> str | Response:
 def export(category: str) -> Response:
     branch = selected_branch(request.args.get("branch"))
     rows = fetch_items(category, branch=branch)
+    show_offer_columns = category in {"slow", "dead"}
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
+    headers = [
         "Period",
         "Branch",
         "Item",
@@ -1423,7 +1542,24 @@ def export(category: str) -> Response:
         "Sales",
         "Stock",
         "Price",
+    ]
+    if show_offer_columns:
+        headers.extend(
+            [
+                "Cost Price",
+                "Unit Profit",
+                "Gross Margin %",
+                "Break Even Price",
+                "Max Safe Discount %",
+                "Suggested Offer Price",
+                "Offer Discount %",
+                "Offer Profit Per Unit",
+                "Offer Profit If Sold",
+            ]
+        )
+    headers.extend([
         "Stock Value",
+        "Cost Value",
         "Avg Daily Sales",
         "Days Cover",
         "Stockout 7d",
@@ -1437,8 +1573,9 @@ def export(category: str) -> Response:
         "Signal",
         "Decision",
     ])
+    writer.writerow(headers)
     for row in rows:
-        writer.writerow([
+        values = [
             row["week_date"],
             row["branch"],
             row["name"],
@@ -1446,7 +1583,24 @@ def export(category: str) -> Response:
             row["sold"],
             row["stock"],
             row["price"],
+        ]
+        if show_offer_columns:
+            values.extend(
+                [
+                    row["cost_price"],
+                    row["unit_profit"],
+                    row["gross_margin_percent"],
+                    row["break_even_price"],
+                    row["max_safe_discount_percent"],
+                    row["suggested_offer_price"],
+                    row["offer_discount_percent"],
+                    row["offer_profit_per_unit"],
+                    row["offer_profit_if_sold"],
+                ]
+            )
+        values.extend([
             row["stock_value"],
+            row["cost_value"],
             row["avg_daily_sales"],
             row["days_cover_forecast"],
             row["stockout_probability_7d"],
@@ -1460,6 +1614,7 @@ def export(category: str) -> Response:
             row["tags"],
             row["decision_label"] or row["action"],
         ])
+        writer.writerow(values)
     return Response(
         "\ufeff" + output.getvalue(),
         mimetype="text/csv; charset=utf-8",

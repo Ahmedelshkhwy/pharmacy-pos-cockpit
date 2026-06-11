@@ -18,6 +18,39 @@
     </select>
   </label>
 
+  <label class="wide">
+    <span>{% if lang == "ar" %}مدة التحليل{% else %}Analysis period{% endif %}</span>
+    <select name="analysis_period_mode" id="analysis_period_mode" required>
+      {% for days in analysis_period_options %}
+      <option value="{{ days }}">{{ days }} {% if lang == "ar" %}يوم{% else %}days{% endif %}</option>
+      {% endfor %}
+      <option value="custom">{% if lang == "ar" %}مخصص{% else %}Custom{% endif %}</option>
+    </select>
+  </label>
+
+  <label class="wide" id="analysis_period_custom_wrap" hidden>
+    <span>{% if lang == "ar" %}المدة المخصصة بالأيام{% else %}Custom days{% endif %}</span>
+    <input type="number" name="analysis_period_days_custom" id="analysis_period_days_custom" min="1" step="1" placeholder="45">
+  </label>
+
+  <script>
+    (function () {
+      const mode = document.getElementById('analysis_period_mode');
+      const wrap = document.getElementById('analysis_period_custom_wrap');
+      const input = document.getElementById('analysis_period_days_custom');
+
+      function sync() {
+        const custom = mode.value === 'custom';
+        wrap.hidden = !custom;
+        input.required = custom;
+        if (!custom) input.value = '';
+      }
+
+      mode.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
+
   <label class="wide file-row">
     <span>Product Activity</span>
     <input type="file" name="product_activity" accept=".xlsx,.xlsm" required>
@@ -38,7 +71,7 @@
 
 <section class="panel">
   <h2>Movement rule</h2>
-  <p class="helper-text">Export Product Activity from the POS for the latest 90 days. The platform uses 90 days as the sales velocity baseline, then forecasts stockout risk over 7 / 14 / 30 days.</p>
+  <p class="helper-text">Choose 30, 90, 120, or Custom, then upload a Product Activity export that covers exactly the same period. The system uses that window as the sales velocity baseline, then forecasts stockout risk over 7 / 14 / 30 days.</p>
 </section>
 
 <section class="panel">

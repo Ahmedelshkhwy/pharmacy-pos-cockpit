@@ -24,9 +24,23 @@ def main() -> None:
         default=BASE_DIR / "instance" / "pos_analysis",
         help="Folder where analysis outputs are written.",
     )
+    parser.add_argument(
+        "--period-days",
+        type=int,
+        default=None,
+        help="Sales movement window to use for calculations. Use any positive number of days that matches Product Activity export dates.",
+    )
     args = parser.parse_args()
 
-    output_dir = analyze_pos_exports(args.source_dir, args.output_dir, prefix=args.prefix)
+    if args.period_days is not None and args.period_days <= 0:
+        raise SystemExit("--period-days must be a positive integer.")
+
+    output_dir = analyze_pos_exports(
+        args.source_dir,
+        args.output_dir,
+        prefix=args.prefix,
+        movement_period_days_override=args.period_days,
+    )
     print(f"POS kick-off analysis written to: {output_dir}")
 
 

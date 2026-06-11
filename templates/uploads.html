@@ -16,6 +16,7 @@
         <th>{% if lang == "ar" %}الأسبوع{% else %}Week{% endif %}</th>
         <th>{{ t("branch") }}</th>
         <th>{% if lang == "ar" %}الملف{% else %}File{% endif %}</th>
+        <th>{% if lang == "ar" %}فترة التحليل{% else %}Period{% endif %}</th>
         <th>{% if lang == "ar" %}الأصناف{% else %}Items{% endif %}</th>
         <th>{{ t("dead_stock") }}</th>
         <th>{% if lang == "ar" %}تنبيهات{% else %}Alerts{% endif %}</th>
@@ -30,6 +31,7 @@
         <td>{{ row.week_date }}</td>
         <td>{{ row.branch }}</td>
         <td>{{ row.filename }}</td>
+        <td>{{ row.analysis_period_days or 90 }}d</td>
         <td>{{ row.total_items }}</td>
         <td>{{ row.dead_count }}</td>
         <td>{{ row.expiry_count }}</td>
@@ -37,7 +39,7 @@
         <td>{{ row.fast_count }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="9" class="empty">{% if lang == "ar" %}مفيش عمليات رفع لسه.{% else %}No imports yet.{% endif %}</td></tr>
+      <tr><td colspan="10" class="empty">{% if lang == "ar" %}مفيش عمليات رفع لسه.{% else %}No imports yet.{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>

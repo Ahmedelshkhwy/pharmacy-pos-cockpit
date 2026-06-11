@@ -17,6 +17,10 @@ DEFAULT_PERIOD_DAYS = 90
 DEFAULT_LEAD_TIME_DAYS = 7
 TARGET_COVER_DAYS = 30
 OVERSTOCK_COVER_DAYS = 180
+SLOW_MOVING_RATIO = 0.05
+SLOW_MOVING_COVER_DAYS = 90
+MIN_OFFER_MARGIN_RATE = 0.05
+DEFAULT_OFFER_DISCOUNT_RATE = 0.15
 
 NUMERIC_COLUMNS = {
     "purchases",
@@ -143,7 +147,9 @@ def report_period_days(metadata: dict[str, str]) -> int:
     return max((end.date() - start.date()).days + 1, 1)
 
 
-def movement_period_days(metadata: dict[str, str]) -> int:
+def movement_period_days(metadata: dict[str, str], override_days: int | None = None) -> int:
+    if override_days is not None and override_days > 0:
+        return override_days
     return DEFAULT_PERIOD_DAYS
 
 
@@ -191,6 +197,20 @@ def predictive_metrics(
     recommended_reorder_qty = max(math.ceil(target_stock - qoh), 0) if avg_daily_sales > 0 else 0
     expected_lost_units_30d = max(avg_daily_sales * 30 - qoh, 0)
     lost_sales_value = expected_lost_units_30d * sales_price
+    unit_profit = max(sales_price - cost, 0) if sales_price > 0 and cost > 0 else 0.0
+    gross_margin_percent = ((sales_price - cost) / sales_price * 100) if sales_price > 0 and cost > 0 else 0.0
+    max_safe_discount_percent = max(gross_margin_percent, 0.0)
+    break_even_price = cost if cost > 0 else 0.0
+    target_offer_price = sales_price * (1 - DEFAULT_OFFER_DISCOUNT_RATE) if sales_price > 0 else 0.0
+    minimum_profitable_price = cost * (1 + MIN_OFFER_MARGIN_RATE) if cost > 0 else 0.0
+    suggested_offer_price = max(target_offer_price, minimum_profitable_price)
+    if sales_price > 0:
+        suggested_offer_price = min(suggested_offer_price, sales_price)
+    else:
+        suggested_offer_price = 0.0
+    offer_discount_percent = ((sales_price - suggested_offer_price) / sales_price * 100) if sales_price > 0 else 0.0
+    offer_profit_per_unit = max(suggested_offer_price - cost, 0) if cost > 0 else 0.0
+    offer_profit_if_sold = offer_profit_per_unit * qoh
 
     frozen_capital_value = 0.0
     if qoh > 0 and (pos_sales == 0 or (days_cover is not None and days_cover > OVERSTOCK_COVER_DAYS)):
@@ -228,6 +248,14 @@ def predictive_metrics(
         "decision_label": decision_label,
         "lost_sales_value": round(lost_sales_value, 2),
         "frozen_capital_value": round(frozen_capital_value, 2),
+        "unit_profit": round(unit_profit, 2),
+        "gross_margin_percent": round(gross_margin_percent, 2),
+        "break_even_price": round(break_even_price, 2),
+        "max_safe_discount_percent": round(max_safe_discount_percent, 2),
+        "suggested_offer_price": round(suggested_offer_price, 2),
+        "offer_discount_percent": round(max(offer_discount_percent, 0.0), 2),
+        "offer_profit_per_unit": round(offer_profit_per_unit, 2),
+        "offer_profit_if_sold": round(offer_profit_if_sold, 2),
         "signal_color": signal_color,
     }
 
@@ -303,8 +331,11 @@ def find_header_row(rows: list[tuple[Any, ...]], required_any: set[str]) -> int:
 
 def workbook_rows(path: Path) -> list[tuple[Any, ...]]:
     workbook = load_workbook(path, data_only=True, read_only=True)
-    sheet = workbook.active
-    return list(sheet.iter_rows(values_only=True))
+    try:
+        sheet = workbook.active
+        return list(sheet.iter_rows(values_only=True))
+    finally:
+        workbook.close()
 
 
 def extract_report_metadata(rows: list[tuple[Any, ...]]) -> dict[str, str]:
@@ -393,7 +424,7 @@ def merge_activity_stock(
             period_days=period_days,
         )
         days_cover = metrics["days_cover"]
-        tags = classify_item(pos_sales=pos_sales, qoh=qoh, turnover_ratio=turnover_ratio)
+        tags = classify_item(pos_sales=pos_sales, qoh=qoh, turnover_ratio=turnover_ratio, days_cover=days_cover)
         item_branch = branch_override or normalize_branch_name(clean_text(stock.get("branch") or activity.get("branch")))
         item = {
                 "ref": ref,
@@ -419,17 +450,20 @@ def merge_activity_stock(
     return merged
 
 
-def classify_item(pos_sales: float, qoh: float, turnover_ratio: float) -> list[str]:
+def classify_item(pos_sales: float, qoh: float, turnover_ratio: float, days_cover: float | None = None) -> list[str]:
     tags: list[str] = []
     if qoh > 0 and pos_sales == 0:
         tags.append("dead_stock")
-    if qoh > 0 and 0 < turnover_ratio < 0.05:
+    if qoh > 0 and pos_sales > 0 and (
+        turnover_ratio < SLOW_MOVING_RATIO
+        or (days_cover is not None and days_cover > SLOW_MOVING_COVER_DAYS)
+    ):
         tags.append("slow_moving")
     if qoh <= 0 and pos_sales > 0:
         tags.append("stockout_with_sales")
     if pos_sales >= 20 and turnover_ratio >= 1:
         tags.append("fast_moving")
-    if qoh > 0 and pos_sales > 0 and (qoh / (pos_sales / 149)) > 180:
+    if qoh > 0 and pos_sales > 0 and days_cover is not None and days_cover > OVERSTOCK_COVER_DAYS:
         tags.append("overstock_risk")
     return tags
 
@@ -531,6 +565,7 @@ def analyze_pos_exports(
     output_root: Path,
     prefix: str = "i-7-",
     branch_override: str | None = None,
+    movement_period_days_override: int | None = None,
 ) -> Path:
     source_files = discover_pos_files(source_dir, prefix=prefix)
     activity_rows, activity_metadata = load_table(source_files.activity, {"ref", "name", "pos_sales", "on_hand"})
@@ -539,14 +574,23 @@ def analyze_pos_exports(
     normalized_override = normalize_branch_name(branch_override or "", fallback_prefix=prefix) if branch_override else None
     metadata["branch"] = normalized_override or normalize_branch_name(metadata.get("branch", ""), fallback_prefix=prefix)
     actual_period_days = report_period_days(metadata)
-    period_days = movement_period_days(metadata)
+    period_days = movement_period_days(metadata, movement_period_days_override)
+    if movement_period_days_override is not None:
+        if not metadata.get("start_date") or not metadata.get("end_date"):
+            raise ValueError("Could not read Product Activity Start Date and End Date; the selected analysis period cannot be verified.")
+        if actual_period_days != period_days:
+            raise ValueError(
+                f"Product Activity export covers {actual_period_days} days, "
+                f"but the selected analysis period is {period_days} days."
+            )
     metadata["actual_export_period_days"] = str(actual_period_days)
     metadata["period_days"] = str(period_days)
+    metadata["selected_period_days"] = str(period_days)
     if actual_period_days != period_days:
         metadata["period_warning"] = (
             f"Product Activity export covers {actual_period_days} days, "
             f"while movement calculations use {period_days} days. "
-            "For best accuracy, export Product Activity for exactly 90 days."
+            f"For best accuracy, export Product Activity for exactly {period_days} days."
         )
     items = merge_activity_stock(activity_rows, stock_rows, period_days=period_days, branch_override=normalized_override)
     summary = summarize(items, metadata)
@@ -582,6 +626,14 @@ def analyze_pos_exports(
         "decision_label",
         "lost_sales_value",
         "frozen_capital_value",
+        "unit_profit",
+        "gross_margin_percent",
+        "break_even_price",
+        "max_safe_discount_percent",
+        "suggested_offer_price",
+        "offer_discount_percent",
+        "offer_profit_per_unit",
+        "offer_profit_if_sold",
         "signal_color",
         "tags",
     ]

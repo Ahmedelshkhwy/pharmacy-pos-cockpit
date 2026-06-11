@@ -21,19 +21,33 @@
         <small>{{ t("app_description") }}</small>
       </span>
     </a>
-    <nav>
-      <a href="{{ url_for('index') }}">{{ t("dashboard") }}</a>
-      <a href="{{ url_for('report', category='expiry') }}">{{ t("reorder_now") }}</a>
-      <a href="{{ url_for('report', category='dead') }}">{{ t("dead_stock") }}</a>
-      <a href="{{ url_for('report', category='overstock') }}">{{ t("overstock_risk") }}</a>
-      <a href="{{ url_for('report', category='fast') }}">{{ t("fast_moving") }}</a>
-      <a href="{{ url_for('report', category='slow') }}">{{ t("slow_moving") }}</a>
-      <a href="{{ url_for('financial') }}">{{ t("financial_panel") }}</a>
-      <a href="{{ url_for('weekly_comparison') }}">{{ t("weekly_comparison") }}</a>
-      <a href="{{ url_for('upload') }}">{{ t("branch_upload") }}</a>
-      <a href="{{ url_for('uploads') }}">{{ t("imports") }}</a>
-      <a href="{{ url_for('data_management') }}">{{ t("data_management") }}</a>
-      <a href="{{ url_for('change_password') }}">{{ t("password") }}</a>
+    <nav class="nav-shell">
+      <div class="nav-section">
+        <span>{{ t("decision_queue") }}</span>
+        <a href="{{ url_for('index') }}">{{ t("dashboard") }}</a>
+        <a href="{{ url_for('report', category='expiry') }}">{{ t("reorder_now") }}</a>
+        <a href="{{ url_for('report', category='risk') }}">{{ t("high_risk") }}</a>
+        <a href="{{ url_for('report', category='dead') }}">{{ t("dead_stock") }}</a>
+      </div>
+      <div class="nav-section">
+        <span>{{ t("analysis") }}</span>
+        <a href="{{ url_for('report', category='overstock') }}">{{ t("overstock_risk") }}</a>
+        <a href="{{ url_for('report', category='fast') }}">{{ t("fast_moving") }}</a>
+        <a href="{{ url_for('report', category='slow') }}">{{ t("slow_moving") }}</a>
+        <a href="{{ url_for('financial') }}">{{ t("financial_panel") }}</a>
+        <a href="{{ url_for('weekly_comparison') }}">{{ t("weekly_comparison") }}</a>
+      </div>
+      <div class="nav-section">
+        <span>{{ t("operations") }}</span>
+        <a href="{{ url_for('upload') }}">{{ t("branch_upload") }}</a>
+        <a href="{{ url_for('uploads') }}">{{ t("imports") }}</a>
+      </div>
+      <div class="nav-section">
+        <span>{{ t("admin") }}</span>
+        <a href="{{ url_for('data_management') }}">{{ t("data_management") }}</a>
+        <a href="{{ url_for('change_password') }}">{{ t("password") }}</a>
+      </div>
+      <div class="nav-footer">
       <form class="language-form" method="post" action="{{ url_for('set_language', lang_code=next_lang) }}">
         <button type="submit">{{ t("language_toggle") }}</button>
       </form>
@@ -42,6 +56,7 @@
         <button type="submit">{{ t("logout") }}</button>
       </form>
       {% endif %}
+      </div>
     </nav>
   </aside>
 

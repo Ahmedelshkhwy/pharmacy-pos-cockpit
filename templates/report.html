@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+{% set show_offer_columns = category in ["slow", "dead"] %}
 <section class="page-head">
   <div>
     <p class="eyebrow">{% if lang == "ar" %}تقرير قرارات{% else %}Decision report{% endif %}</p>
@@ -31,6 +32,14 @@
         <th>{{ t("ref") }}</th>
         <th>{{ t("sales") }}</th>
         <th>{{ t("stock") }}</th>
+        {% if show_offer_columns %}
+        <th>Sale price</th>
+        <th>Cost</th>
+        <th>Margin</th>
+        <th>Max safe discount</th>
+        <th>Offer price</th>
+        <th>Offer profit</th>
+        {% endif %}
         <th>Days cover</th>
         <th>7d out</th>
         <th>14d out</th>
@@ -51,6 +60,17 @@
         <td>{{ row.sku }}</td>
         <td>{{ row.sold|round(2) }}</td>
         <td>{{ row.stock|round(2) }}</td>
+        {% if show_offer_columns %}
+        <td>{{ "{:,.2f}".format(row.price or 0) }}</td>
+        <td>{{ "{:,.2f}".format(row.cost_price or 0) }}</td>
+        <td>{{ "{:,.1f}%".format(row.gross_margin_percent or 0) }}</td>
+        <td>{{ "{:,.1f}%".format(row.max_safe_discount_percent or 0) }}</td>
+        <td>{{ "{:,.2f}".format(row.suggested_offer_price or 0) }}</td>
+        <td>
+          {{ "{:,.2f}".format(row.offer_profit_per_unit or 0) }}
+          <small>Total: {{ "{:,.0f}".format(row.offer_profit_if_sold or 0) }}</small>
+        </td>
+        {% endif %}
         <td>{% if row.days_cover_forecast is not none %}{{ row.days_cover_forecast|round(1) }}{% else %}-{% endif %}</td>
         <td>{{ "{:.0%}".format(row.stockout_probability_7d or 0) }}</td>
         <td>{{ "{:.0%}".format(row.stockout_probability_14d or 0) }}</td>
@@ -65,7 +85,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="15" class="empty">{{ t("no_rows_report") }}</td></tr>
+      <tr><td colspan="{{ 21 if show_offer_columns else 15 }}" class="empty">{{ t("no_rows_report") }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
