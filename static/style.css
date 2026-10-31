@@ -1064,6 +1064,23 @@ td small { display: block; }
 .trend.up { color: #05603a; }
 .trend.down { color: var(--danger); }
 .rate-explain { line-height: 1.8; }
+.button.whatsapp { background: #128c4a; color: #fff; border-color: #128c4a; }
+.digest { margin-bottom: 18px; }
+.digest summary { cursor: pointer; font-weight: 700; color: var(--accent); }
+.digest pre { white-space: pre-wrap; font-family: inherit; line-height: 1.8; margin: 10px 0 0; }
+.danger-chip { background: #fff1f0; color: var(--danger); }
+.priority { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.priority.urgent { background: #fff1f0; color: var(--danger); }
+.priority.soon { background: #fff7e6; color: var(--warn); }
+.priority.planned { background: #eef4f7; color: var(--muted); }
+.abc-badge { display: inline-block; min-width: 20px; padding: 1px 6px; border-radius: 6px; font-size: 11px; font-weight: 800; text-align: center; color: #fff; background: var(--muted); }
+.abc-badge.abc-A { background: #12a150; }
+.abc-badge.abc-B { background: var(--accent); }
+.abc-badge.abc-C { background: var(--warn); }
+.abc-matrix { min-width: 560px; }
+.abc-matrix th { white-space: nowrap; }
+.abc-cell small { display: block; color: var(--muted); }
+.abc-cell.empty-cell { color: var(--muted); }
 .settings-group { max-width: none; margin-bottom: 18px; }
 .settings-group h2 { margin-bottom: 4px; }
 .settings-group label small { font-weight: 400; }

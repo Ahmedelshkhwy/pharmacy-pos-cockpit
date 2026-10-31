@@ -135,3 +135,21 @@ def forecast_item(
 
 def to_day_index(daily: dict[date, float], start: date) -> dict[int, float]:
     return {(day - start).days: qty for day, qty in daily.items()}
+
+
+def weekly_variability(daily: dict[int, float], days: int) -> float | None:
+    """Coefficient of variation of weekly sales (std / mean); None with under 4 full weeks."""
+    weeks = days // 7
+    if weeks < 4:
+        return None
+    offset = days - weeks * 7  # use the most recent full weeks
+    totals = [0.0] * weeks
+    for day, qty in daily.items():
+        if day >= offset:
+            totals[min((day - offset) // 7, weeks - 1)] += qty
+    mean = sum(totals) / weeks
+    if mean <= 0:
+        return None
+    variance = sum((total - mean) ** 2 for total in totals) / weeks
+    return math.sqrt(variance) / mean
+

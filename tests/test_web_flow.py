@@ -66,7 +66,8 @@ def test_upload_review_analyze_and_browse(client):
     assert "مصر الجديدة" in result
 
     for url in ["/", "/profit-loss", "/reports/expiry", "/reports/reorder", "/reports/loss", "/financial",
-                "/trends", "/trends?branch=مصر الجديدة", "/settings", "/uploads", "/data-management", "/export/expiry"]:
+                "/trends", "/trends?branch=مصر الجديدة", "/settings", "/uploads", "/data-management", "/export/expiry",
+                "/actions", "/abc", "/purchase-orders.xlsx"]:
         assert client.get(url).status_code == 200, url
     page = client.get("/profit-loss?branch=مصر الجديدة").data.decode()
     in_stock_file = [item for item in generate_samples.build_branch(23, "B") if item.stock > 0]  # cost comes from there
@@ -151,3 +152,22 @@ def test_settings_change_results_after_reanalysis(client):
     selling = [row for row in rows if row["sold"] > 0 and row["category"] != "Antibiotics"]
     assert all(row["reorder_point"] > before[row["sku"]] for row in selling)  # longer lead time -> reorder earlier
     assert snapshot_count("Maadi") == 1  # same period re-analyzed, not duplicated
+
+
+def test_action_center_and_purchase_order_excel(client):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    submit_review(client, upload(client, [SAMPLES / "D_chain_multi_branch.xlsx"]))
+    page = client.get("/actions").data.decode()
+    assert "wa.me" in page and "GSK Distribution" in page
+    assert "Downtown" in page and "Nasr City" in page  # transfers name both ends
+
+    response = client.get("/purchase-orders.xlsx?branch=Zayed")
+    workbook = load_workbook(BytesIO(response.data))
+    assert workbook.sheetnames and all(name.startswith("Zayed") for name in workbook.sheetnames)
+    sheet = workbook[workbook.sheetnames[0]]
+    quantities = [row[5] for row in sheet.iter_rows(min_row=2, values_only=True) if row[0]]
+    total_row = [row for row in sheet.iter_rows(values_only=True) if row[2] in ("Total", "الإجمالي")][0]
+    assert quantities and total_row[5] == sum(quantities)
