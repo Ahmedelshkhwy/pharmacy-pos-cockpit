@@ -13,13 +13,15 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, flash, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, Response, abort, flash, g, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import actions as action_plans
+import ask as data_questions
+import db as database
 from insights import analyze_profit_loss
 from pos_pipeline import normalize_branch_name
-from settings import SETTING_FIELDS, SETTING_GROUPS, AnalysisSettings
+from settings import BUSINESS_PROFILES, SETTING_FIELDS, SETTING_GROUPS, AnalysisSettings
 from settings import dumps as dump_settings
 from settings import loads as load_settings_json
 from smart_import import (
@@ -30,7 +32,7 @@ from smart_import import (
     detect_file,
     field_choices,
     load_profiles,
-    save_profile,
+    profile_entry,
 )
 from smart_pipeline import branch_slug, clean_branch_label, run_smart_import
 
@@ -43,6 +45,7 @@ POS_ANALYSIS_DIR = DATA_DIR / "pos_analysis"
 IMPORTS_DIR = DATA_DIR / "imports"
 MAPPING_PROFILES_PATH = DATA_DIR / "mapping_profiles.json"
 DB_PATH = DATA_DIR / "pharmacy.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip() or None  # PostgreSQL when set, SQLite otherwise
 BRANCH_TEMPLATE_PATH = BASE_DIR / "pharmacy_branch_upload_template.xlsx"
 
 MAX_UPLOAD_FILES = 10
@@ -96,6 +99,11 @@ ITEM_EXTRA_COLUMNS = {
     "demand_cv": "REAL",
 }
 
+USER_EXTRA_COLUMNS = {
+    "role": "TEXT NOT NULL DEFAULT 'owner'",  # users created before roles existed were full admins
+    "branches": "TEXT NOT NULL DEFAULT '[]'",
+}
+
 UPLOAD_EXTRA_COLUMNS = {
     "analysis_period_days": "INTEGER NOT NULL DEFAULT 90",
     "coverage": "TEXT NOT NULL DEFAULT ''",
@@ -127,6 +135,8 @@ TRANSLATIONS = {
         "branch_upload": "Branch Upload",
         "smart_upload": "Upload files",
         "trends": "Trends over time",
+        "ask": "Ask your data",
+        "users": "Users & permissions",
         "actions": "Action center",
         "abc": "ABC analysis",
         "settings": "Analysis settings",
@@ -199,6 +209,8 @@ TRANSLATIONS = {
         "branch_upload": "رفع ملفات فرع",
         "smart_upload": "ارفع ملفات",
         "trends": "التطور مع الوقت",
+        "ask": "اسأل بياناتك",
+        "users": "المستخدمين والصلاحيات",
         "actions": "مركز الأفعال",
         "abc": "تحليل ABC",
         "settings": "إعدادات التحليل",
@@ -259,11 +271,8 @@ TRANSLATIONS = {
 }
 
 
-def get_db() -> sqlite3.Connection:
-    DATA_DIR.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_db() -> database.Connection:
+    return database.connect(DATABASE_URL, DB_PATH)
 
 
 def init_db() -> None:
@@ -329,6 +338,17 @@ def init_db() -> None:
                 FOREIGN KEY(upload_id) REFERENCES uploads(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS mapping_profiles (
+                signature TEXT PRIMARY KEY,
+                data TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS import_runs (
+                token TEXT PRIMARY KEY,
+                finished_at TEXT NOT NULL,
+                result TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -388,11 +408,15 @@ def init_db() -> None:
             );
             """
         )
-        existing_item_columns = {row["name"] for row in db.execute("PRAGMA table_info(items)").fetchall()}
+        existing_item_columns = db.table_columns("items")
         for column, definition in ITEM_EXTRA_COLUMNS.items():
             if column not in existing_item_columns:
                 db.execute(f"ALTER TABLE items ADD COLUMN {column} {definition}")
-        existing_upload_columns = {row["name"] for row in db.execute("PRAGMA table_info(uploads)").fetchall()}
+        existing_user_columns = db.table_columns("users")
+        for column, definition in USER_EXTRA_COLUMNS.items():
+            if column not in existing_user_columns:
+                db.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+        existing_upload_columns = db.table_columns("uploads")
         for column, definition in UPLOAD_EXTRA_COLUMNS.items():
             if column not in existing_upload_columns:
                 db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
@@ -408,6 +432,15 @@ def init_db() -> None:
             )
 
 
+def business_type() -> str:
+    if "business_type" not in g:
+        try:
+            g.business_type = load_analysis_settings().business_type
+        except Exception:  # database not ready yet (first start)
+            g.business_type = "pharmacy"
+    return g.business_type
+
+
 def load_analysis_settings() -> AnalysisSettings:
     with get_db() as db:
         row = db.execute("SELECT value FROM app_settings WHERE key = 'analysis'").fetchone()
@@ -416,7 +449,47 @@ def load_analysis_settings() -> AnalysisSettings:
 
 def save_analysis_settings(settings: AnalysisSettings) -> None:
     with get_db() as db:
-        db.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('analysis', ?)", (dump_settings(settings),))
+        db.upsert("app_settings", "key", {"key": "analysis", "value": dump_settings(settings)})
+
+
+ROLES = {
+    "owner": ("المالك: كل الفروع وكل الصلاحيات", "Owner: all branches, full control"),
+    "manager": ("مدير فرع: فروعه بس، ويقدر يرفع ملفاتها", "Branch manager: own branches, can upload"),
+    "viewer": ("مشاهد: فروعه بس، من غير تعديل", "Viewer: own branches, read only"),
+}
+PERMISSIONS = {"upload": {"owner", "manager"}, "admin": {"owner"}}
+NO_BRANCH = "—"  # selected for a restricted user who has no branches yet: matches no data
+
+
+def current_user() -> dict[str, Any] | None:
+    if "user" not in g:
+        g.user = None
+        if session.get("user_id"):
+            with get_db() as db:
+                row = db.execute("SELECT * FROM users WHERE id = ?", (session["user_id"],)).fetchone()
+            g.user = dict(row) if row else None
+    return g.user
+
+
+def user_branches(user: dict[str, Any]) -> list[str]:
+    try:
+        branches = json.loads(user.get("branches") or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [str(branch) for branch in branches if str(branch).strip()]
+
+
+def allowed_branches() -> list[str] | None:
+    """None means every branch (owner); otherwise the only branches this user may see."""
+    user = current_user()
+    if user is None or user.get("role", "owner") == "owner":
+        return None
+    return user_branches(user)
+
+
+def can(action: str) -> bool:
+    user = current_user()
+    return bool(user) and user.get("role", "owner") in PERMISSIONS[action]
 
 
 def login_required(view):
@@ -424,9 +497,30 @@ def login_required(view):
     def wrapped_view(*args, **kwargs):
         if not session.get("user_id"):
             return redirect(url_for("login", next=request.path))
+        if current_user() is None:  # the account was deleted
+            session.clear()
+            return redirect(url_for("login"))
         return view(*args, **kwargs)
 
     return wrapped_view
+
+
+def permission_required(action: str):
+    def decorator(view):
+        @wraps(view)
+        def wrapped_view(*args, **kwargs):
+            if not can(action):
+                abort(403)
+            return view(*args, **kwargs)
+
+        return wrapped_view
+
+    return decorator
+
+
+@app.errorhandler(403)
+def forbidden(_error: Exception) -> tuple[str, int]:
+    return render_template("forbidden.html"), 403
 
 
 def current_language() -> str:
@@ -435,6 +529,8 @@ def current_language() -> str:
 
 def translate(key: str) -> str:
     lang = current_language()
+    if key == "app_description":  # wording follows the business type chosen in settings
+        return BUSINESS_PROFILES[business_type()]["description"][0 if lang == "ar" else 1]
     return TRANSLATIONS.get(lang, TRANSLATIONS["en"]).get(key, TRANSLATIONS["en"].get(key, key))
 
 
@@ -446,6 +542,10 @@ def inject_language_helpers() -> dict[str, Any]:
         "text_dir": "rtl" if lang == "ar" else "ltr",
         "next_lang": "en" if lang == "ar" else "ar",
         "t": translate,
+        "can": can,
+        "scoped_user": allowed_branches() is not None,
+        "user": current_user(),
+        "roles": ROLES,
     }
 
 
@@ -633,7 +733,7 @@ def item_loss_value(item: dict[str, Any]) -> float:
     return float(item.get("negative_margin_loss") or 0) + float(item.get("expiry_risk_value") or 0) + float(lost or 0)
 
 
-def record_snapshot(db: sqlite3.Connection, summary: dict[str, Any], branch: str, rows: list[dict[str, Any]], folder: str) -> int:
+def record_snapshot(db: database.Connection, summary: dict[str, Any], branch: str, rows: list[dict[str, Any]], folder: str) -> int:
     """Store one upload's totals and per-item numbers so history survives later uploads.
 
     Re-uploading the same branch and period replaces that snapshot instead of duplicating it.
@@ -648,7 +748,7 @@ def record_snapshot(db: sqlite3.Connection, summary: dict[str, Any], branch: str
     for old in db.execute("SELECT id FROM snapshots WHERE branch = ? AND period_end = ? AND period_days = ?", (branch, period_end, period_days)).fetchall():
         db.execute("DELETE FROM item_history WHERE snapshot_id = ?", (old["id"],))
         db.execute("DELETE FROM snapshots WHERE id = ?", (old["id"],))
-    cursor = db.execute(
+    snapshot_id = db.insert(
         """
         INSERT INTO snapshots
         (branch, period_start, period_end, period_days, uploaded_at, source_folder, item_count, has_cost, net_sales,
@@ -665,7 +765,6 @@ def record_snapshot(db: sqlite3.Connection, summary: dict[str, Any], branch: str
             sum("dead_stock" in row["tags"] for row in rows), sum("stockout_with_sales" in row["tags"] for row in rows),
         ),
     )
-    snapshot_id = int(cursor.lastrowid)
     db.executemany(
         """
         INSERT INTO item_history
@@ -690,7 +789,7 @@ def backfill_snapshots() -> int:
     with get_db() as db:
         if db.execute("SELECT value FROM app_settings WHERE key = 'snapshots_backfilled'").fetchone():
             return 0
-        db.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('snapshots_backfilled', '1')")
+        db.upsert("app_settings", "key", {"key": "snapshots_backfilled", "value": "1"})
     count = 0
     folders = sorted(POS_ANALYSIS_DIR.glob("*_20*/merged_items.csv"), key=lambda csv_path: csv_path.stat().st_mtime) if POS_ANALYSIS_DIR.exists() else []
     for csv_path in folders:
@@ -727,7 +826,7 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_toke
             for item_branch in branches:
                 db.execute("DELETE FROM items WHERE branch = ?", (item_branch,))
 
-        cursor = db.execute(
+        upload_id = db.insert(
             """
             INSERT INTO uploads
             (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, expiry_count,
@@ -750,7 +849,6 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_toke
                 import_token,
             ),
         )
-        upload_id = cursor.lastrowid
         columns = ["upload_id", "branch", "week_date", "tags", "urgency", "action", "reason", *ITEM_CSV_FIELDS]
         placeholders = ", ".join("?" for _ in columns)
         db.executemany(
@@ -763,7 +861,9 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_toke
 
 def branch_options() -> list[str]:
     with get_db() as db:
-        return [row["branch"] for row in db.execute("SELECT DISTINCT branch FROM items ORDER BY branch").fetchall()]
+        branches = [row["branch"] for row in db.execute("SELECT DISTINCT branch FROM items ORDER BY branch").fetchall()]
+    allowed = allowed_branches()
+    return branches if allowed is None else [branch for branch in branches if branch in allowed]
 
 
 def branch_data_summary() -> list[dict[str, Any]]:
@@ -884,6 +984,11 @@ def known_branches() -> list[str]:
 
 
 def selected_branch(value: str | None) -> str | None:
+    allowed = allowed_branches()
+    if allowed is not None:
+        # Restricted users always look at one of their own branches.
+        value = clean_branch_label(value or "")
+        return value if value in allowed else (allowed[0] if allowed else NO_BRANCH)
     if not value or value == "all":
         return None
     value = clean_branch_label(value)
@@ -1052,6 +1157,37 @@ def load_json(path: Path | None) -> dict[str, Any] | None:
         return None
 
 
+def load_mapping_profiles() -> dict[str, Any]:
+    """Confirmed column layouts live in the database; a profiles file from older versions is imported once."""
+    with get_db() as db:
+        profiles = {row["signature"]: json.loads(row["data"]) for row in db.execute("SELECT signature, data FROM mapping_profiles")}
+        if not profiles and MAPPING_PROFILES_PATH.exists():
+            profiles = load_profiles(MAPPING_PROFILES_PATH)
+            for signature, data in profiles.items():
+                db.upsert("mapping_profiles", "signature", {"signature": signature, "data": json.dumps(data, ensure_ascii=False)})
+    return profiles
+
+
+def save_mapping_profile(spec: TableSpec) -> None:
+    with get_db() as db:
+        db.upsert("mapping_profiles", "signature", {"signature": spec.signature, "data": json.dumps(profile_entry(spec), ensure_ascii=False)})
+
+
+def save_import_result(token: str, result: dict[str, Any]) -> None:
+    with get_db() as db:
+        db.upsert("import_runs", "token", {"token": token, "finished_at": result["finished_at"], "result": json.dumps(result, ensure_ascii=False, default=str)})
+
+
+def load_import_result(token: str) -> dict[str, Any] | None:
+    if not TOKEN_PATTERN.fullmatch(token or ""):
+        return None
+    with get_db() as db:
+        row = db.execute("SELECT result FROM import_runs WHERE token = ?", (token,)).fetchone()
+    if row:
+        return json.loads(row["result"])
+    return load_json(IMPORTS_DIR / token / "result.json")  # imports made before results moved to the database
+
+
 def save_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -1059,9 +1195,10 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
 
 @app.route("/upload", methods=["GET", "POST"])
 @login_required
+@permission_required("upload")
 def upload() -> str | Response:
     if request.method == "GET":
-        return render_template("upload.html", branch_choices=known_branches(), extensions=sorted(SUPPORTED_EXTENSIONS))
+        return render_template("upload.html", branch_choices=upload_branch_choices(), extensions=sorted(SUPPORTED_EXTENSIONS))
 
     files = [file for file in request.files.getlist("files") if file and file.filename]
     if not files:
@@ -1074,7 +1211,7 @@ def upload() -> str | Response:
     token = secrets.token_hex(8)
     folder = IMPORTS_DIR / token / "files"
     folder.mkdir(parents=True)
-    profiles = load_profiles(MAPPING_PROFILES_PATH)
+    profiles = load_mapping_profiles()
     stored = []
     for index, file in enumerate(files):
         original = Path(file.filename).name
@@ -1105,6 +1242,11 @@ def upload() -> str | Response:
     return redirect(url_for("upload_review", token=token))
 
 
+def upload_branch_choices() -> list[str]:
+    allowed = allowed_branches()
+    return known_branches() if allowed is None else allowed
+
+
 def draft_needs_period(draft: dict[str, Any]) -> bool:
     """True when sales data exists but nothing in the files tells us the period it covers."""
     has_sales = False
@@ -1125,6 +1267,7 @@ def draft_needs_period(draft: dict[str, Any]) -> bool:
 
 @app.route("/upload/review/<token>", methods=["GET", "POST"])
 @login_required
+@permission_required("upload")
 def upload_review(token: str) -> str | Response:
     folder = import_dir(token)
     draft = load_json(folder / "draft.json" if folder else None)
@@ -1141,12 +1284,15 @@ def upload_review(token: str) -> str | Response:
             field_labels=FIELD_LABELS,
             table_roles=TABLE_ROLES,
             needs_period=draft_needs_period(draft),
-            branch_choices=known_branches(),
+            branch_choices=upload_branch_choices(),
             branch_hint=next((spec["meta"]["branch_hint"] for file in draft["files"] for spec in file["specs"] if spec.get("meta", {}).get("branch_hint")), ""),
         )
 
     draft["branch"] = clean_branch_label(request.form.get("branch", ""))
     draft["period_days"] = parse_int(request.form.get("period_days"), 0) or None
+    allowed = allowed_branches()
+    if allowed is not None and not draft["branch"] and len(allowed) == 1:
+        draft["branch"] = allowed[0]
     tables: list[tuple[Path, TableSpec]] = []
     for file_index, file in enumerate(draft["files"]):
         for table_index, spec_data in enumerate(file["specs"]):
@@ -1175,13 +1321,18 @@ def upload_review(token: str) -> str | Response:
             flash(f"مقدرتش أحلل الملفات: {exc} / Could not analyze the files.", "error")
         return redirect(url_for("upload_review", token=token))
 
+    if allowed is not None:
+        outside = sorted({branch_result.branch for branch_result in result.branches} - set(allowed))
+        if outside:
+            flash(f"مسموح لك ترفع لفروعك بس. الملف فيه: {', '.join(outside)}. / You can only upload your own branches.", "error")
+            return redirect(url_for("upload_review", token=token))
     for _path, spec in tables:
-        save_profile(MAPPING_PROFILES_PATH, spec)
+        save_mapping_profile(spec)
     for branch_result in result.branches:
         import_pos_analysis_to_db(branch_result.output_dir, import_token=token)
 
-    save_json(
-        folder / "result.json",
+    save_import_result(
+        token,
         {
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "quality": result.quality,
@@ -1210,10 +1361,12 @@ def upload_review(token: str) -> str | Response:
 @app.route("/imports/<token>")
 @login_required
 def import_result(token: str) -> str | Response:
-    folder = import_dir(token)
-    result = load_json(folder / "result.json" if folder else None)
+    result = load_import_result(token)
     if not result:
         return redirect(url_for("uploads"))
+    allowed = allowed_branches()
+    if allowed is not None and not {branch["branch"] for branch in result["branches"]} <= set(allowed):
+        abort(403)
     counters = result["quality"].get("counters", {})
     issues = [
         {"key": key, "count": counters[key], "text": QUALITY_ISSUES[key], "samples": result["quality"].get("samples", {}).get(key, [])}
@@ -1387,6 +1540,49 @@ def abc_analysis() -> str:
     )
 
 
+def saved_ai_key() -> str:
+    with get_db() as db:
+        row = db.execute("SELECT value FROM app_settings WHERE key = 'anthropic_api_key'").fetchone()
+    return row["value"] if row else ""
+
+
+def ai_key_source() -> str:
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "env"
+    return "saved" if saved_ai_key() else ""
+
+
+def claude_client() -> Any | None:
+    """Only when a key is configured; the built-in engine answers otherwise."""
+    source = ai_key_source()
+    if not source:
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        return None
+    return anthropic.Anthropic(api_key=saved_ai_key() if source == "saved" else None, max_retries=1, timeout=60.0)
+
+
+def visible_item_rows() -> list[dict[str, Any]]:
+    allowed = allowed_branches()
+    with get_db() as db:
+        rows = [dict(row) for row in db.execute("SELECT * FROM items")]
+    return rows if allowed is None else [row for row in rows if row["branch"] in allowed]
+
+
+@app.route("/ask")
+@login_required
+def ask_page() -> str:
+    question = request.args.get("q", "").strip()
+    lang = current_language()
+    rows = visible_item_rows()
+    answer = data_questions.ask(question, rows, lang, claude_client()) if question else None
+    branch = sorted({row["branch"] for row in rows})[0] if rows else ""
+    examples = [example.format(branch=branch) for example in (data_questions.EXAMPLES_AR if lang == "ar" else data_questions.EXAMPLES_EN)]
+    return render_template("ask.html", question=question, answer=answer, examples=examples, ai_enabled=bool(ai_key_source()))
+
+
 @app.route("/profit-loss")
 @login_required
 def profit_loss() -> str:
@@ -1451,9 +1647,11 @@ def branch_dashboard(branch: str) -> Response:
 def financial_rows(branch: str | None = None) -> dict[str, Any]:
     item_where = "WHERE branch = ?" if branch else ""
     item_params = [branch] if branch else []
+    # The branch comparison shows every branch to owners, and only the selected branch to restricted users.
+    compare_where, compare_params = ("WHERE branch = ?", [branch]) if allowed_branches() is not None else ("", [])
     with get_db() as db:
         branch_rows = db.execute(
-            """
+            f"""
             SELECT
                 branch,
                 COUNT(*) AS items,
@@ -1463,9 +1661,11 @@ def financial_rows(branch: str | None = None) -> dict[str, Any]:
                 SUM(CASE WHEN tags LIKE '%dead_stock%' THEN stock_value ELSE 0 END) AS dead_value,
                 SUM(CASE WHEN risk_score >= 8 THEN 1 ELSE 0 END) AS high_risk_count
             FROM items
+            {compare_where}
             GROUP BY branch
             ORDER BY lost_sales_value DESC, frozen_capital_value DESC
-            """
+            """,
+            compare_params,
         ).fetchall()
         category_rows = db.execute(
             f"""
@@ -1687,6 +1887,10 @@ def product_detail(sku: str) -> str:
         ).fetchall()
 
     history = product_history(sku)
+    allowed = allowed_branches()
+    if allowed is not None:
+        comparison_rows = [row for row in comparison_rows if row["branch"] in allowed]
+        history = [row for row in history if row["branch"] in allowed]
     product_name = ""
     if current_rows:
         product_name = current_rows[0]["name"]
@@ -1750,7 +1954,7 @@ def trends() -> str:
         metrics=TREND_METRICS,
         max_sales=max([float(item["row"]["net_sales"] or 0) for item in timeline] or [1]) or 1,
         selected_branch=branch,
-        branch_options=sorted({row["branch"] for row in overview}) if not branch else known_branches(),
+        branch_options=branch_options(),
         branch_args=branch_query_args(branch),
     )
 
@@ -1759,6 +1963,7 @@ def settings_from_form(form: Any) -> AnalysisSettings:
     # A checked box sends both the hidden "0" and "1"; the last value wins.
     data: dict[str, Any] = {spec.key: (form.getlist(spec.key) or [""])[-1] for spec in SETTING_FIELDS}
     data = {key: value for key, value in data.items() if value != ""}
+    data["business_type"] = form.get("business_type", "pharmacy")
     data["lead_time_overrides"] = [
         {"kind": kind, "name": name, "days": days}
         for kind, name, days in zip(form.getlist("override_kind"), form.getlist("override_name"), form.getlist("override_days"))
@@ -1777,7 +1982,7 @@ def reanalyze_import(token: str, settings: AnalysisSettings) -> int:
     """Re-run a past import from its archived files and reviewed column mapping."""
     folder = import_dir(token)
     draft = load_json(folder / "draft.json" if folder else None)
-    result = load_json(folder / "result.json" if folder else None)
+    result = load_import_result(token)
     if not folder or not draft or not result:
         return 0
     used = {(table["file"], table["sheet"]) for table in result.get("tables", [])}
@@ -1797,12 +2002,27 @@ def reanalyze_import(token: str, settings: AnalysisSettings) -> int:
 
 @app.route("/settings", methods=["GET", "POST"])
 @login_required
+@permission_required("admin")
 def analysis_settings() -> str | Response:
     if request.method == "POST":
         action = request.form.get("action", "save")
-        if action == "reset":
-            save_analysis_settings(AnalysisSettings())
-            flash("رجعت الإعدادات الافتراضية. / Defaults restored.", "success")
+        if action == "save_ai_key":
+            key = request.form.get("anthropic_api_key", "").strip()
+            if key:
+                with get_db() as db:
+                    db.upsert("app_settings", "key", {"key": "anthropic_api_key", "value": key})
+                flash("اتحفظ مفتاح Claude. / Claude key saved.", "success")
+        elif action == "remove_ai_key":
+            with get_db() as db:
+                db.execute("DELETE FROM app_settings WHERE key = 'anthropic_api_key'")
+            flash("اتشال مفتاح Claude. / Claude key removed.", "success")
+        elif action == "reset":
+            save_analysis_settings(AnalysisSettings().with_profile(load_analysis_settings().business_type))
+            flash("رجعت القيم المقترحة لنوع النشاط. / Suggested values restored.", "success")
+        elif action == "apply_profile":
+            chosen = request.form.get("business_type", "pharmacy")
+            save_analysis_settings(load_analysis_settings().with_profile(chosen))
+            flash("اتطبقت القيم المقترحة لنوع النشاط. اضغط أعد التحليل علشان تتطبق على البيانات الحالية. / Profile applied; re-analyze to update current data.", "success")
         elif action == "reanalyze":
             settings = load_analysis_settings()
             count = sum(reanalyze_import(token, settings) for token in latest_import_tokens())
@@ -1825,7 +2045,71 @@ def analysis_settings() -> str | Response:
         suppliers=suppliers,
         categories=categories,
         reanalyze_count=len(latest_import_tokens()),
+        ai_key_source=ai_key_source(),
+        profiles=BUSINESS_PROFILES,
+        database_label=database.describe(DATABASE_URL),
     )
+
+
+def owner_count(db: database.Connection) -> int:
+    return db.execute("SELECT COUNT(*) FROM users WHERE role = 'owner'").fetchone()[0]
+
+
+@app.route("/users", methods=["GET", "POST"])
+@login_required
+@permission_required("admin")
+def users_page() -> str | Response:
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        role = request.form.get("role", "viewer")
+        branches = json.dumps(sorted({clean_branch_label(branch) for branch in request.form.getlist("branches") if clean_branch_label(branch)}), ensure_ascii=False)
+        if role not in ROLES:
+            abort(400)
+        with get_db() as db:
+            if action == "create":
+                username = request.form.get("username", "").strip()
+                password = request.form.get("password", "")
+                if not re.fullmatch(r"[\w.@-]{3,40}", username) or len(password) < 8:
+                    flash("اسم المستخدم 3 حروف على الأقل (من غير مسافات)، وكلمة المرور 8 على الأقل. / Username 3+ chars, password 8+.", "error")
+                elif db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+                    flash("اسم المستخدم ده موجود. / Username already exists.", "error")
+                else:
+                    db.execute(
+                        "INSERT INTO users (username, password_hash, created_at, role, branches) VALUES (?, ?, ?, ?, ?)",
+                        (username, generate_password_hash(password), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, branches),
+                    )
+                    flash(f"اتعمل حساب {username}. / Created {username}.", "success")
+                return redirect(url_for("users_page"))
+            user_id = parse_int(request.form.get("user_id"), 0)
+            target = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not target:
+                abort(404)
+            losing_owner = target["role"] == "owner" and (action == "delete" or role != "owner")
+            if losing_owner and owner_count(db) <= 1:
+                flash("لازم يفضل مالك واحد على الأقل. / At least one owner must remain.", "error")
+            elif action == "update":
+                db.execute("UPDATE users SET role = ?, branches = ? WHERE id = ?", (role, branches, user_id))
+                flash(f"اتحدثت صلاحيات {target['username']}. / Updated {target['username']}.", "success")
+            elif action == "reset_password":
+                password = request.form.get("password", "")
+                if len(password) < 8:
+                    flash("كلمة المرور 8 حروف على الأقل. / Password must be 8+ characters.", "error")
+                else:
+                    db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(password), user_id))
+                    flash(f"اتغيرت كلمة مرور {target['username']}. / Password reset.", "success")
+            elif action == "delete":
+                if target["id"] == session.get("user_id"):
+                    flash("مينفعش تمسح حسابك. / You cannot delete yourself.", "error")
+                else:
+                    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+                    flash(f"اتمسح {target['username']}. / Deleted {target['username']}.", "success")
+        return redirect(url_for("users_page"))
+
+    with get_db() as db:
+        users = [dict(row) for row in db.execute("SELECT id, username, role, branches, created_at FROM users ORDER BY id")]
+    for entry in users:
+        entry["branch_list"] = user_branches(entry)
+    return render_template("users.html", users=users, branch_choices=known_branches())
 
 
 @app.route("/uploads")
@@ -1833,11 +2117,15 @@ def analysis_settings() -> str | Response:
 def uploads() -> str:
     with get_db() as db:
         rows = db.execute("SELECT * FROM uploads ORDER BY id DESC").fetchall()
+    allowed = allowed_branches()
+    if allowed is not None:
+        rows = [row for row in rows if row["branch"] in allowed]
     return render_template("uploads.html", rows=rows)
 
 
 @app.route("/data-management", methods=["GET", "POST"])
 @login_required
+@permission_required("admin")
 def data_management() -> str | Response:
     if request.method == "POST":
         mode = request.form.get("mode", "")

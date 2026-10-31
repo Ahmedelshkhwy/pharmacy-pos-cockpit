@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+{% set ar = lang == "ar" %}
+{% macro role_select(selected) -%}
+<select name="role">
+  {% for key, labels in roles.items() %}<option value="{{ key }}" {% if key == selected %}selected{% endif %}>{{ labels[0] if ar else labels[1] }}</option>{% endfor %}
+</select>
+{%- endmacro %}
+{% macro branch_checks(selected) -%}
+<div class="branch-checks">
+  {% for branch in branch_choices %}
+  <label class="checkbox-row"><input type="checkbox" name="branches" value="{{ branch }}" {% if branch in selected %}checked{% endif %}><span>{{ branch }}</span></label>
+  {% else %}
+  <small class="helper-text">{% if ar %}مفيش فروع لسه. ارفع بيانات الأول، أو اكتب اسم الفرع تحت.{% else %}No branches yet. Upload data first, or type a branch name below.{% endif %}</small>
+  {% endfor %}
+  <input name="branches" placeholder="{% if ar %}فرع تاني (اختياري){% else %}Another branch (optional){% endif %}" maxlength="60">
+</div>
+{%- endmacro %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}كل واحد يشوف اللي يخصه{% else %}Everyone sees what concerns them{% endif %}</p>
+    <h1>{{ t("users") }}</h1>
+    <p class="subtle">{% if ar %}مدير الفرع والمشاهد بيشوفوا الفروع اللي متحددة ليهم بس: اللوحات، والتقارير، والتصدير، وطلبيات الشراء.{% else %}Branch managers and viewers only see their assigned branches: dashboards, reports, exports and purchase orders.{% endif %}</p>
+  </div>
+</section>
+
+<section class="driver-list">
+  {% for entry in users %}
+  <article class="driver-card info">
+    <header>
+      <div>
+        <h3>{{ entry.username }}{% if entry.id == user.id %} <span class="chip">{% if ar %}إنت{% else %}you{% endif %}</span>{% endif %}</h3>
+        <p>{{ roles[entry.role][0 if ar else 1] }}{% if entry.role != "owner" %} · {{ entry.branch_list|join("، ") if entry.branch_list else ("من غير فروع" if ar else "no branches") }}{% endif %}</p>
+      </div>
+      <small class="helper-text">{{ entry.created_at }}</small>
+    </header>
+    <details>
+      <summary>{% if ar %}تعديل{% else %}Edit{% endif %}</summary>
+      <form method="post" class="form user-form">
+        <input type="hidden" name="user_id" value="{{ entry.id }}">
+        <label><span>{% if ar %}الدور{% else %}Role{% endif %}</span>{{ role_select(entry.role) }}</label>
+        <label class="wide"><span>{% if ar %}الفروع (لمدير الفرع والمشاهد){% else %}Branches (managers and viewers){% endif %}</span>{{ branch_checks(entry.branch_list) }}</label>
+        <button class="button primary" type="submit" name="action" value="update">{% if ar %}احفظ{% else %}Save{% endif %}</button>
+      </form>
+      <form method="post" class="form user-form">
+        <input type="hidden" name="user_id" value="{{ entry.id }}">
+        <input type="hidden" name="role" value="{{ entry.role }}">
+        <label><span>{% if ar %}كلمة مرور جديدة{% else %}New password{% endif %}</span><input type="password" name="password" minlength="8" autocomplete="new-password"></label>
+        <button class="button" type="submit" name="action" value="reset_password">{% if ar %}غيّر كلمة المرور{% else %}Reset password{% endif %}</button>
+        {% if entry.id != user.id %}
+        <button class="button danger" type="submit" name="action" value="delete" onclick="return confirm('{% if ar %}تمسح {{ entry.username }}؟{% else %}Delete {{ entry.username }}?{% endif %}')">{% if ar %}امسح الحساب{% else %}Delete user{% endif %}</button>
+        {% endif %}
+      </form>
+    </details>
+  </article>
+  {% endfor %}
+</section>
+
+<form method="post" class="panel form">
+  <input type="hidden" name="action" value="create">
+  <h2 class="wide">{% if ar %}مستخدم جديد{% else %}New user{% endif %}</h2>
+  <label><span>{{ t("username") }}</span><input name="username" required minlength="3" maxlength="40" pattern="[\w.@\-]+" autocomplete="off"></label>
+  <label><span>{{ t("password") }}</span><input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+  <label><span>{% if ar %}الدور{% else %}Role{% endif %}</span>{{ role_select("manager") }}</label>
+  <label class="wide"><span>{% if ar %}الفروع{% else %}Branches{% endif %}</span>{{ branch_checks([]) }}</label>
+  <button class="button primary wide" type="submit">{% if ar %}اعمل الحساب{% else %}Create user{% endif %}</button>
+</form>
+{% endblock %}

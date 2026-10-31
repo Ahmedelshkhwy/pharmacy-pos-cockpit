@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ai_enabled %}Claude{% else %}{% if ar %}محرك داخلي، من غير إنترنت{% else %}Built-in engine, works offline{% endif %}{% endif %}</p>
+    <h1>{{ t("ask") }}</h1>
+    <p class="subtle">{% if ar %}اكتب سؤالك زي ما بتتكلم. الإجابة من بيانات الفروع المسموحة ليك بس.{% else %}Ask the way you talk. Answers only use the branches you are allowed to see.{% endif %}</p>
+  </div>
+</section>
+
+<form class="panel ask-form" method="get">
+  <input name="q" value="{{ question }}" maxlength="500" autofocus required
+         placeholder="{% if ar %}مثلاً: إيه أكتر 5 أصناف بتخسرني فلوس في فرع المعادي؟{% else %}e.g. Which 5 items lose me the most money?{% endif %}">
+  <button class="button primary" type="submit">{% if ar %}اسأل{% else %}Ask{% endif %}</button>
+</form>
+
+{% if answer %}
+<section class="panel story answer-card">
+  <div class="chips">
+    <span class="chip {{ 'ok' if answer.source == 'claude' else '' }}">{{ "Claude" if answer.source == "claude" else ("المحرك الداخلي" if ar else "Built-in") }}</span>
+    {% if answer.understood %}<span class="chip">{% if ar %}فهمت:{% else %}Understood:{% endif %} {{ answer.understood }}</span>{% endif %}
+  </div>
+  <div class="answer-text">{{ answer.headline }}</div>
+  {% if answer.note %}<p class="helper-text">{{ answer.note }}</p>{% endif %}
+  {% if answer.rows %}
+  <table class="compact-table fit-table">
+    <thead><tr>{% for key, label in answer.columns %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in answer.rows %}
+      <tr>
+        {% for key, label in answer.columns %}
+        <td>{% if key == "name" and row.sku %}<a class="item-link" href="{{ url_for('product_detail', sku=row.sku, branch=row.branch) }}">{{ row[key] }}</a>{% elif key == "value" %}<strong>{{ row[key] }}</strong>{% else %}{{ row[key] }}{% endif %}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>{% if ar %}جرّب تسأل{% else %}Try asking{% endif %}</h2>
+  <div class="chips">
+    {% for example in examples %}<a class="chip example-chip" href="{{ url_for('ask_page', q=example) }}">{{ example }}</a>{% endfor %}
+  </div>
+  {% if not ai_enabled %}
+  <p class="helper-text">{% if ar %}المحرك الداخلي بيفهم: الخسارة، والربح، والمبيعات، والهامش، والرصيد، والراكد، والنواقص، والصلاحية، والمشتريات. وكمان أسماء الفروع والمجموعات والموردين والأصناف، وكلمات زي أكتر وأقل، وأي رقم زي "أكتر 5". لو عايز يفهم أي صياغة، صاحب الحساب يقدر يضيف مفتاح Claude من الإعدادات.{% else %}The built-in engine understands loss, profit, sales, margin, stock, dead stock, stockouts, expiry, purchases, branch/category/supplier/item names, most/least, and counts like "top 5". The owner can add a Claude key in settings for any phrasing.{% endif %}</p>
+  {% endif %}
+</section>
+{% endblock %}

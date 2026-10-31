@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h1>{% if lang == "ar" %}مش مسموح{% else %}Not allowed{% endif %}</h1>
+  <p class="helper-text">{% if lang == "ar" %}الصفحة دي مش ضمن صلاحيات حسابك. لو محتاجها، كلم صاحب الحساب.{% else %}This page is outside your account's permissions. Ask the owner if you need it.{% endif %}</p>
+  <a class="button primary" href="{{ url_for('index') }}">{{ t("back_to_dashboard") }}</a>
+</section>
+{% endblock %}
