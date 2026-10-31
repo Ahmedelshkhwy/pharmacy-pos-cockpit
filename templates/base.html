@@ -7,7 +7,19 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <aside class="sidebar">
+  {% set menu_label = "القائمة" if lang == "ar" else "Menu" %}
+  <header class="mobile-bar">
+    <button class="menu-toggle" type="button" aria-controls="site-nav" aria-expanded="false" aria-label="{{ menu_label }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <span class="mobile-title" id="mobile-page-title">{{ t("app_name") }}</span>
+    <a class="mobile-home" href="{{ url_for('index') }}" aria-label="{{ t('dashboard') }}">
+      <svg viewBox="0 0 48 48" aria-hidden="true"><path class="logo-cross" d="M21 8h6v8h8v6h-8v8h-6v-8h-8v-6h8z" /></svg>
+    </a>
+  </header>
+  <div class="nav-backdrop" hidden></div>
+  <aside class="sidebar" id="site-nav" aria-label="{{ menu_label }}">
+    <button class="menu-close" type="button" aria-label="{{ 'اقفل القائمة' if lang == 'ar' else 'Close menu' }}">&times;</button>
     <a class="brand" href="{{ url_for('index') }}">
       <span class="brand-mark" aria-hidden="true">
         <svg viewBox="0 0 48 48" role="img" focusable="false">
@@ -70,7 +82,7 @@
     </nav>
   </aside>
 
-  <main class="main">
+  <main class="main" id="main-content">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         <div class="messages">
@@ -82,5 +94,43 @@
     {% endwith %}
     {% block content %}{% endblock %}
   </main>
+  <script>
+    (function () {
+      var nav = document.getElementById("site-nav");
+      var toggle = document.querySelector(".menu-toggle");
+      var closeButton = document.querySelector(".menu-close");
+      var backdrop = document.querySelector(".nav-backdrop");
+      var links = Array.prototype.slice.call(nav.querySelectorAll(".nav-section a"));
+
+      // Highlight the page you are on, and show its name in the mobile bar.
+      var here = window.location.pathname;
+      var current = links.filter(function (link) { return new URL(link.href).pathname === here; })[0];
+      if (current) {
+        current.classList.add("active");
+        current.setAttribute("aria-current", "page");
+        document.getElementById("mobile-page-title").textContent = current.textContent.trim();
+      }
+
+      function setOpen(open) {
+        nav.classList.toggle("open", open);
+        document.body.classList.toggle("nav-open", open);
+        backdrop.hidden = !open;
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        if (open) { (current || links[0]).focus({ preventScroll: true }); } else { toggle.focus({ preventScroll: true }); }
+      }
+      toggle.addEventListener("click", function () { setOpen(!nav.classList.contains("open")); });
+      closeButton.addEventListener("click", function () { setOpen(false); });
+      backdrop.addEventListener("click", function () { setOpen(false); });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && nav.classList.contains("open")) { setOpen(false); }
+      });
+      links.forEach(function (link) {
+        link.addEventListener("click", function () { if (nav.classList.contains("open")) { setOpen(false); } });
+      });
+      window.matchMedia("(min-width: 921px)").addEventListener("change", function (query) {
+        if (query.matches && nav.classList.contains("open")) { setOpen(false); }
+      });
+    })();
+  </script>
 </body>
 </html>
