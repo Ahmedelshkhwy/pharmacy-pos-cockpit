@@ -1610,20 +1610,21 @@ def download_template() -> Response:
 @login_required
 def report(category: str) -> str:
     labels = {
-        "all": "All Items",
-        "dead": "Dead Stock",
-        "reorder": "Stockout With Sales",
-        "expiry": "Expiry Risk",
-        "loss": "Selling Below Cost",
-        "overstock": "Overstock Risk",
-        "slow": "Slow Moving",
-        "fast": "Fast Moving",
-        "risk": "High Risk Score",
+        "all": ("All Items", "كل الأصناف"),
+        "dead": ("Dead Stock", "مخزون راكد"),
+        "reorder": ("Stockout With Sales", "اشتري أو حوّل دلوقتي"),
+        "expiry": ("Expiry Risk", "خطر الصلاحية"),
+        "loss": ("Selling Below Cost", "بيع بأقل من التكلفة"),
+        "overstock": ("Overstock Risk", "زيادة مخزون"),
+        "slow": ("Slow Moving", "أصناف بطيئة"),
+        "fast": ("Fast Moving", "أصناف سريعة"),
+        "risk": ("High Risk Score", "خطورة عالية"),
     }
     if category not in labels:
         return redirect(url_for("index"))
     branch = selected_branch(request.args.get("branch"))
-    title = labels[category] if not branch else f"{labels[category]} - {branch}"
+    label = labels[category][1 if current_language() == "ar" else 0]
+    title = label if not branch else f"{label} - {branch}"
     return render_template(
         "report.html",
         title=title,
