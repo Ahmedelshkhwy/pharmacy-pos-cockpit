@@ -19,7 +19,7 @@
       </label>
     </form>
     <a class="button" href="{{ url_for('index') }}">{{ t("reset") }}</a>
-    <a class="button" href="{{ url_for('weekly_comparison', branch=selected_branch) if selected_branch else url_for('weekly_comparison') }}">{{ t("weekly_comparison") }}</a>
+    <a class="button" href="{{ url_for('trends', **branch_args) }}">{{ t("trends") }}</a>
     <a class="button" href="{{ url_for('financial', branch=selected_branch) if selected_branch else url_for('financial') }}">{{ t("financial_panel") }}</a>
     <a class="button primary" href="{{ url_for('upload') }}">{{ t("upload_excel") }}</a>
   </div>

@@ -18,6 +18,9 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from insights import analyze_profit_loss
 from pos_pipeline import normalize_branch_name
+from settings import SETTING_FIELDS, SETTING_GROUPS, AnalysisSettings
+from settings import dumps as dump_settings
+from settings import loads as load_settings_json
 from smart_import import (
     FIELD_LABELS,
     SUPPORTED_EXTENSIONS,
@@ -82,6 +85,11 @@ ITEM_EXTRA_COLUMNS = {
     "expired_qty": "REAL NOT NULL DEFAULT 0",
     "expiry_risk_qty": "REAL NOT NULL DEFAULT 0",
     "expiry_risk_value": "REAL NOT NULL DEFAULT 0",
+    "base_daily_sales": "REAL NOT NULL DEFAULT 0",
+    "unavailable_days": "INTEGER NOT NULL DEFAULT 0",
+    "sales_trend": "TEXT NOT NULL DEFAULT ''",
+    "trend_ratio": "REAL NOT NULL DEFAULT 1",
+    "lead_time_days": "INTEGER NOT NULL DEFAULT 7",
 }
 
 UPLOAD_EXTRA_COLUMNS = {
@@ -99,15 +107,6 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 app.jinja_env.auto_reload = True
 
-WEEKLY_COMPARISON_METRICS = [
-    ("sales", "Sales", "total_net_sales"),
-    ("stock", "Stock value", "total_stock_value"),
-    ("dead", "Dead stock", "dead_stock"),
-    ("risk", "High risk", "high_risk_count"),
-    ("frozen", "Frozen capital", "frozen_capital_value"),
-    ("lost", "Lost sales", "lost_sales_value"),
-]
-
 TRANSLATIONS = {
     "en": {
         "app_name": "Predictive POS Cockpit",
@@ -123,6 +122,8 @@ TRANSLATIONS = {
         "weekly_comparison": "Weekly Comparison",
         "branch_upload": "Branch Upload",
         "smart_upload": "Upload files",
+        "trends": "Trends over time",
+        "settings": "Analysis settings",
         "profit_loss": "Profit & Loss Drivers",
         "expiry_risk": "Expiry Risk",
         "selling_below_cost": "Selling Below Cost",
@@ -191,6 +192,8 @@ TRANSLATIONS = {
         "weekly_comparison": "مقارنة أسبوعية",
         "branch_upload": "رفع ملفات فرع",
         "smart_upload": "ارفع ملفات",
+        "trends": "التطور مع الوقت",
+        "settings": "إعدادات التحليل",
         "profit_loss": "سر المكسب والخسارة",
         "expiry_risk": "خطر الصلاحية",
         "selling_below_cost": "بيع بأقل من التكلفة",
@@ -318,6 +321,57 @@ def init_db() -> None:
                 FOREIGN KEY(upload_id) REFERENCES uploads(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                branch TEXT NOT NULL,
+                period_start TEXT NOT NULL DEFAULT '',
+                period_end TEXT NOT NULL,
+                period_days INTEGER NOT NULL,
+                uploaded_at TEXT NOT NULL,
+                source_folder TEXT NOT NULL DEFAULT '',
+                item_count INTEGER NOT NULL,
+                has_cost INTEGER NOT NULL DEFAULT 0,
+                net_sales REAL NOT NULL DEFAULT 0,
+                gross_profit REAL NOT NULL DEFAULT 0,
+                margin_pct REAL NOT NULL DEFAULT 0,
+                stock_value REAL NOT NULL DEFAULT 0,
+                total_loss REAL NOT NULL DEFAULT 0,
+                total_frozen REAL NOT NULL DEFAULT 0,
+                lost_sales_value REAL NOT NULL DEFAULT 0,
+                frozen_capital_value REAL NOT NULL DEFAULT 0,
+                expiry_risk_value REAL NOT NULL DEFAULT 0,
+                high_risk_count INTEGER NOT NULL DEFAULT 0,
+                dead_count INTEGER NOT NULL DEFAULT 0,
+                stockout_count INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS item_history (
+                snapshot_id INTEGER NOT NULL,
+                branch TEXT NOT NULL,
+                sku TEXT NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '',
+                sold REAL NOT NULL DEFAULT 0,
+                stock REAL NOT NULL DEFAULT 0,
+                net_sales REAL NOT NULL DEFAULT 0,
+                gross_profit REAL NOT NULL DEFAULT 0,
+                avg_daily_sales REAL NOT NULL DEFAULT 0,
+                risk_score INTEGER NOT NULL DEFAULT 1,
+                loss_value REAL NOT NULL DEFAULT 0,
+                frozen_value REAL NOT NULL DEFAULT 0,
+                expiry_risk_value REAL NOT NULL DEFAULT 0,
+                tags TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_item_history_sku ON item_history(sku, branch);
+            CREATE INDEX IF NOT EXISTS idx_item_history_snapshot ON item_history(snapshot_id);
+            CREATE INDEX IF NOT EXISTS idx_snapshots_branch ON snapshots(branch, period_end);
+
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -344,6 +398,17 @@ def init_db() -> None:
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
+
+
+def load_analysis_settings() -> AnalysisSettings:
+    with get_db() as db:
+        row = db.execute("SELECT value FROM app_settings WHERE key = 'analysis'").fetchone()
+    return load_settings_json(row["value"] if row else None)
+
+
+def save_analysis_settings(settings: AnalysisSettings) -> None:
+    with get_db() as db:
+        db.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('analysis', ?)", (dump_settings(settings),))
 
 
 def login_required(view):
@@ -488,17 +553,37 @@ ITEM_CSV_FIELDS = {
     "expiry_risk_value": ("expiry_risk_value", parse_num),
     "expiry": ("expiry", str),
     "days_left": ("days_left", parse_optional_float),
+    "base_daily_sales": ("base_daily_sales", parse_num),
+    "unavailable_days": ("unavailable_days", lambda value: parse_int(value, default=0)),
+    "sales_trend": ("sales_trend", str),
+    "trend_ratio": ("trend_ratio", lambda value: parse_num(value) or 1.0),
+    "lead_time_days": ("lead_time_days", lambda value: parse_int(value, default=7)),
 }
 
 
-def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_token: str = "") -> int:
-    init_db()
+def to_iso_date(value: str) -> str:
+    text = str(value or "").strip().split(" ")[0]
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return text
+
+
+def summary_coverage(summary: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, bool]:
+    if summary.get("coverage"):
+        return summary["coverage"]
+    # imported by the legacy 3-file pipeline
+    return {"sales": True, "stock": True, "price": True, "cost": any(float(row.get("cost_price") or 0) > 0 for row in rows)}
+
+
+def read_analysis_rows(path: Path) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
     summary = load_analysis_summary(path)
     metadata = summary.get("metadata", {})
     branch = summary_branch(metadata, path)
     smart = metadata.get("source") == "smart"
     week_date = (metadata.get("end_date") or date.today().isoformat()).split(" ")[0]
-    source_file = ", ".join(source["file"] for source in summary.get("sources", [])) or f"{path.name}/merged_items.csv"
 
     rows: list[dict[str, Any]] = []
     with (path / "merged_items.csv").open(encoding="utf-8-sig", newline="") as handle:
@@ -529,6 +614,91 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_toke
                 }
             )
             rows.append(row)
+    return summary, branch, rows
+
+
+def item_loss_value(item: dict[str, Any]) -> float:
+    lost = item["lost_profit_value"] if item.get("cost_known") else item.get("lost_sales_value", 0)
+    return float(item.get("negative_margin_loss") or 0) + float(item.get("expiry_risk_value") or 0) + float(lost or 0)
+
+
+def record_snapshot(db: sqlite3.Connection, summary: dict[str, Any], branch: str, rows: list[dict[str, Any]], folder: str) -> int:
+    """Store one upload's totals and per-item numbers so history survives later uploads.
+
+    Re-uploading the same branch and period replaces that snapshot instead of duplicating it.
+    """
+    metadata = summary.get("metadata", {})
+    period_days = parse_int(metadata.get("period_days"), default=90)
+    period_end = to_iso_date(metadata.get("end_date") or "") or date.today().isoformat()
+    period_start = to_iso_date(metadata.get("start_date") or "")
+    items = [db_row_to_item(row) for row in rows]
+    settings = AnalysisSettings.from_dict(metadata.get("settings"))
+    pl = analyze_profit_loss(items, period_days=period_days, coverage=summary_coverage(summary, rows), settings=settings)
+    for old in db.execute("SELECT id FROM snapshots WHERE branch = ? AND period_end = ? AND period_days = ?", (branch, period_end, period_days)).fetchall():
+        db.execute("DELETE FROM item_history WHERE snapshot_id = ?", (old["id"],))
+        db.execute("DELETE FROM snapshots WHERE id = ?", (old["id"],))
+    cursor = db.execute(
+        """
+        INSERT INTO snapshots
+        (branch, period_start, period_end, period_days, uploaded_at, source_folder, item_count, has_cost, net_sales,
+         gross_profit, margin_pct, stock_value, total_loss, total_frozen, lost_sales_value, frozen_capital_value,
+         expiry_risk_value, high_risk_count, dead_count, stockout_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            branch, period_start, period_end, period_days, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), folder,
+            len(rows), int(bool(pl["coverage"].get("cost"))), pl["revenue"], pl["gross_profit"], pl["margin_pct"],
+            sum(float(row["stock_value"] or 0) for row in rows), pl["total_loss"], pl["total_frozen"],
+            sum(float(row["lost_sales_value"] or 0) for row in rows), sum(float(row["frozen_capital_value"] or 0) for row in rows),
+            sum(float(row["expiry_risk_value"] or 0) for row in rows), sum(1 for row in rows if row["risk_score"] >= 8),
+            sum("dead_stock" in row["tags"] for row in rows), sum("stockout_with_sales" in row["tags"] for row in rows),
+        ),
+    )
+    snapshot_id = int(cursor.lastrowid)
+    db.executemany(
+        """
+        INSERT INTO item_history
+        (snapshot_id, branch, sku, name, category, sold, stock, net_sales, gross_profit, avg_daily_sales, risk_score,
+         loss_value, frozen_value, expiry_risk_value, tags)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                snapshot_id, item["branch"], item["sku"], item["name"], item["category"], item["sold"], item["stock"],
+                item["net_sales"], item["gross_profit"], item["avg_daily_sales"], item["risk_score"], item_loss_value(item),
+                float(item["frozen_capital_value"] or 0), float(item["expiry_risk_value"] or 0), item["tags"],
+            )
+            for item in items
+        ],
+    )
+    return snapshot_id
+
+
+def backfill_snapshots() -> int:
+    """One-time: turn analysis folders saved before history existed into snapshots."""
+    with get_db() as db:
+        if db.execute("SELECT value FROM app_settings WHERE key = 'snapshots_backfilled'").fetchone():
+            return 0
+        db.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('snapshots_backfilled', '1')")
+    count = 0
+    folders = sorted(POS_ANALYSIS_DIR.glob("*_20*/merged_items.csv"), key=lambda csv_path: csv_path.stat().st_mtime) if POS_ANALYSIS_DIR.exists() else []
+    for csv_path in folders:
+        try:
+            summary, branch, rows = read_analysis_rows(csv_path.parent)
+        except (OSError, ValueError, KeyError):
+            continue
+        with get_db() as db:
+            record_snapshot(db, summary, branch, rows, csv_path.parent.name)
+        count += 1
+    return count
+
+
+def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_token: str = "") -> int:
+    init_db()
+    summary, branch, rows = read_analysis_rows(path)
+    metadata = summary.get("metadata", {})
+    week_date = (metadata.get("end_date") or date.today().isoformat()).split(" ")[0]
+    source_file = ", ".join(source["file"] for source in summary.get("sources", [])) or f"{path.name}/merged_items.csv"
 
     counts = {
         "dead": sum("dead_stock" in row["tags"] for row in rows),
@@ -539,13 +709,12 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_toke
     branches = sorted({row["branch"] for row in rows}) or [branch]
 
     with get_db() as db:
+        # The items table holds each branch's current picture; uploads and snapshots keep the history.
         if replace_all:
             db.execute("DELETE FROM items")
-            db.execute("DELETE FROM uploads")
         else:
             for item_branch in branches:
                 db.execute("DELETE FROM items WHERE branch = ?", (item_branch,))
-                db.execute("DELETE FROM uploads WHERE branch = ?", (item_branch,))
 
         cursor = db.execute(
             """
@@ -577,6 +746,7 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_toke
             f"INSERT INTO items ({', '.join(columns)}) VALUES ({placeholders})",
             [tuple(upload_id if column == "upload_id" else row[column] for column in columns) for row in rows],
         )
+        record_snapshot(db, summary, branch, rows, path.name)
     return len(rows)
 
 
@@ -682,11 +852,15 @@ def delete_branch_data(branch: str | None = None, delete_files: bool = True) -> 
             upload_count = db.execute("SELECT COUNT(*) FROM uploads WHERE branch = ?", (branch,)).fetchone()[0]
             db.execute("DELETE FROM items WHERE branch = ?", (branch,))
             db.execute("DELETE FROM uploads WHERE branch = ?", (branch,))
+            db.execute("DELETE FROM item_history WHERE snapshot_id IN (SELECT id FROM snapshots WHERE branch = ?)", (branch,))
+            db.execute("DELETE FROM snapshots WHERE branch = ?", (branch,))
         else:
             item_count = db.execute("SELECT COUNT(*) FROM items").fetchone()[0]
             upload_count = db.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]
             db.execute("DELETE FROM items")
             db.execute("DELETE FROM uploads")
+            db.execute("DELETE FROM item_history")
+            db.execute("DELETE FROM snapshots")
 
     file_count = remove_branch_files(branch) if delete_files else 0
     return {"items": item_count, "uploads": upload_count, "files": file_count}
@@ -980,7 +1154,9 @@ def upload_review(token: str) -> str | Response:
         return redirect(url_for("upload_review", token=token))
 
     try:
-        result = run_smart_import(tables, POS_ANALYSIS_DIR, default_branch=draft["branch"], period_days_override=draft["period_days"])
+        result = run_smart_import(
+            tables, POS_ANALYSIS_DIR, default_branch=draft["branch"], period_days_override=draft["period_days"], settings=load_analysis_settings()
+        )
     except ValueError as exc:
         if str(exc) == "period_required":
             flash("الملفات فيها مبيعات بس مش واضح هي عن كام يوم. اكتب مدة المبيعات بالأيام. / Enter how many days the sales cover.", "error")
@@ -1072,7 +1248,9 @@ def profit_loss_for(branch: str | None = None) -> dict[str, Any]:
     params = [branch] if branch else []
     with get_db() as db:
         rows = db.execute(f"SELECT * FROM items {where}", params).fetchall()
-        uploads_rows = db.execute(f"SELECT analysis_period_days, coverage FROM uploads {where}", params).fetchall()
+        uploads_rows = db.execute(
+            f"SELECT analysis_period_days, coverage FROM uploads WHERE id IN (SELECT DISTINCT upload_id FROM items {where})", params
+        ).fetchall()
     items = [db_row_to_item(row) for row in rows]
     coverage: dict[str, bool] = {}
     for upload_row in uploads_rows:
@@ -1086,7 +1264,7 @@ def profit_loss_for(branch: str | None = None) -> dict[str, Any]:
             coverage[key] = coverage.get(key, False) or bool(value)
     periods = {int(upload_row["analysis_period_days"] or 0) for upload_row in uploads_rows}
     period = periods.pop() if len(periods) == 1 else 0
-    result = analyze_profit_loss(items, period_days=period, coverage=coverage)
+    result = analyze_profit_loss(items, period_days=period, coverage=coverage, settings=load_analysis_settings())
     result["has_data"] = bool(items)
     return result
 
@@ -1240,192 +1418,127 @@ def financial_rows(branch: str | None = None) -> dict[str, Any]:
     }
 
 
+def snapshot_rows(branch: str | None = None) -> list[sqlite3.Row]:
+    where = "WHERE branch = ?" if branch else ""
+    with get_db() as db:
+        return db.execute(f"SELECT * FROM snapshots {where} ORDER BY branch, period_end, id", [branch] if branch else []).fetchall()
+
+
 def financial_history(branch: str | None = None) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    if not POS_ANALYSIS_DIR.exists():
-        return rows
-
-    for summary_path in sorted(POS_ANALYSIS_DIR.glob("*_20*/summary.json"), key=lambda path: path.stat().st_mtime):
-        try:
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        metadata = summary.get("metadata", {})
-        item_branch = summary_branch(metadata, summary_path.parent)
-        if branch and item_branch != branch:
-            continue
-        timestamp = summary_path.parent.name.split("_", 1)[-1]
-        rows.append(
-            {
-                "label": timestamp[-6:-4] + ":" + timestamp[-4:-2] if len(timestamp) >= 6 else summary_path.parent.name,
-                "branch": item_branch,
-                "lostSales": round(float(summary.get("lost_sales_value") or 0), 2),
-                "frozenCapital": round(float(summary.get("frozen_capital_value") or 0), 2),
-                "highRisk": int(summary.get("high_risk_count") or 0),
-                "reorderQty": round(float(summary.get("reorder_qty_total") or 0), 2),
-                "exposure": round(float(summary.get("lost_sales_value") or 0) + float(summary.get("frozen_capital_value") or 0), 2),
-            }
-        )
-    return rows[-18:]
+    rows = sorted(snapshot_rows(branch), key=lambda row: (row["period_end"], row["id"]))
+    return [
+        {
+            "label": row["period_end"][5:],
+            "branch": row["branch"],
+            "lostSales": round(float(row["lost_sales_value"] or 0), 2),
+            "frozenCapital": round(float(row["frozen_capital_value"] or 0), 2),
+            "highRisk": int(row["high_risk_count"] or 0),
+            "exposure": round(float(row["lost_sales_value"] or 0) + float(row["frozen_capital_value"] or 0), 2),
+        }
+        for row in rows
+    ][-18:]
 
 
-def summary_sort_value(summary_path: Path, metadata: dict[str, Any]) -> str:
-    end_date = str(metadata.get("end_date") or "").strip()
-    if end_date:
-        return end_date
-    timestamp = summary_path.parent.name.split("_", 1)[-1]
-    return timestamp or datetime.fromtimestamp(summary_path.stat().st_mtime).isoformat()
+TREND_METRICS = [
+    # snapshot column, arabic, english, which direction is good
+    ("net_sales", "المبيعات", "Sales", "up"),
+    ("gross_profit", "مجمل الربح", "Gross profit", "up"),
+    ("margin_pct", "الهامش %", "Margin %", "up"),
+    ("total_loss", "الخسائر", "Losses", "down"),
+    ("total_frozen", "فلوس متجمدة", "Frozen cash", "down"),
+    ("expiry_risk_value", "خطر الصلاحية", "Expiry risk", "down"),
+    ("stockout_count", "نواقص عليها طلب", "Stockouts with demand", "down"),
+    ("high_risk_count", "خطورة عالية", "High-risk items", "down"),
+]
 
 
-def summary_label(summary_path: Path, metadata: dict[str, Any]) -> str:
-    start_date = str(metadata.get("start_date") or "").strip()
-    end_date = str(metadata.get("end_date") or "").strip()
-    if start_date and end_date:
-        return f"{start_date} to {end_date}"
-    if end_date:
-        return end_date
-    return summary_path.parent.name.split("_", 1)[-1]
+def compare_values(current: float, previous: float | None, good: str) -> dict[str, Any]:
+    if previous is None:
+        return {"current": current, "previous": None, "delta": 0.0, "percent": None, "state": "new"}
+    delta = current - previous
+    percent = (delta / abs(previous) * 100) if previous else None
+    if abs(delta) < 1e-9 or (percent is not None and abs(percent) < 1):
+        state = "flat"
+    else:
+        state = "better" if (delta > 0) == (good == "up") else "worse"
+    return {"current": current, "previous": previous, "delta": delta, "percent": percent, "state": state}
 
 
-def summary_metric(summary: dict[str, Any], metric_key: str) -> float:
-    if metric_key == "dead_stock":
-        return float((summary.get("tag_counts") or {}).get("dead_stock") or 0)
-    return float(summary.get(metric_key) or 0)
-
-
-def change_percent(current: float, previous: float) -> float | None:
-    if previous == 0:
-        return 0 if current == 0 else None
-    return ((current - previous) / abs(previous)) * 100
-
-
-def change_class(delta: float) -> str:
-    if delta > 0:
-        return "up"
-    if delta < 0:
-        return "down"
-    return "flat"
-
-
-def comparison_metric(current: float, previous: float | None) -> dict[str, Any]:
-    previous_value = previous if previous is not None else 0
-    delta = current - previous_value if previous is not None else 0
-    percent = change_percent(current, previous_value) if previous is not None else None
+def compare_snapshots(current: sqlite3.Row, previous: sqlite3.Row | None) -> dict[str, dict[str, Any]]:
     return {
-        "current": round(current, 2),
-        "previous": round(previous_value, 2),
-        "delta": round(delta, 2),
-        "percent": None if percent is None else round(percent, 1),
-        "class": change_class(delta) if previous is not None else "flat",
+        key: compare_values(float(current[key] or 0), float(previous[key] or 0) if previous else None, good)
+        for key, _ar, _en, good in TREND_METRICS
     }
 
 
-def weekly_summary_records(branch: str | None = None) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    if not POS_ANALYSIS_DIR.exists():
-        return records
+def trends_overview(branch: str | None = None) -> list[dict[str, Any]]:
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in snapshot_rows(branch):
+        grouped.setdefault(row["branch"], []).append(row)
+    overview = []
+    for name, rows in sorted(grouped.items()):
+        current, previous = rows[-1], rows[-2] if len(rows) > 1 else None
+        overview.append({"branch": name, "count": len(rows), "current": current, "previous": previous, "metrics": compare_snapshots(current, previous)})
+    return overview
 
-    for summary_path in POS_ANALYSIS_DIR.glob("*_20*/summary.json"):
-        try:
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+
+def snapshot_movers(branch: str, limit: int = 8) -> dict[str, list[dict[str, Any]]] | None:
+    """What changed between a branch's last two uploads, item by item."""
+    rows = snapshot_rows(branch)
+    if len(rows) < 2:
+        return None
+    current_id, previous_id = rows[-1]["id"], rows[-2]["id"]
+    with get_db() as db:
+        current = {row["sku"]: row for row in db.execute("SELECT * FROM item_history WHERE snapshot_id = ?", (current_id,))}
+        previous = {row["sku"]: row for row in db.execute("SELECT * FROM item_history WHERE snapshot_id = ?", (previous_id,))}
+    changes = []
+    for sku, now in current.items():
+        before = previous.get(sku)
+        if before is None:
             continue
-        metadata = summary.get("metadata", {})
-        item_branch = summary_branch(metadata, summary_path.parent)
-        if branch and item_branch != branch:
-            continue
-        records.append(
+        rate_now, rate_before = float(now["avg_daily_sales"] or 0), float(before["avg_daily_sales"] or 0)
+        changes.append(
             {
-                "branch": item_branch,
-                "folder": summary_path.parent.name,
-                "label": summary_label(summary_path, metadata),
-                "sort_value": summary_sort_value(summary_path, metadata),
-                "summary": summary,
+                "sku": sku,
+                "name": now["name"],
+                "branch": now["branch"],
+                "loss_now": float(now["loss_value"] or 0),
+                "loss_before": float(before["loss_value"] or 0),
+                "loss_delta": float(now["loss_value"] or 0) - float(before["loss_value"] or 0),
+                "rate_now": rate_now,
+                "rate_before": rate_before,
+                "rate_change": (rate_now - rate_before) / rate_before * 100 if rate_before > 0 else None,
+                "stockout_now": "stockout_with_sales" in now["tags"],
+                "stockout_before": "stockout_with_sales" in before["tags"],
+                "dead_now": "dead_stock" in now["tags"],
+                "dead_before": "dead_stock" in before["tags"],
             }
         )
-    return sorted(records, key=lambda row: (row["branch"], row["sort_value"], row["folder"]))
+    busy = [change for change in changes if max(change["rate_now"], change["rate_before"]) >= 0.2]
+    return {
+        "worse": sorted((c for c in changes if c["loss_delta"] > 0), key=lambda c: -c["loss_delta"])[:limit],
+        "better": sorted((c for c in changes if c["loss_delta"] < 0), key=lambda c: c["loss_delta"])[:limit],
+        "new_stockouts": [c for c in changes if c["stockout_now"] and not c["stockout_before"]][:limit],
+        "recovered": [c for c in changes if c["stockout_before"] and not c["stockout_now"]][:limit],
+        "new_dead": [c for c in changes if c["dead_now"] and not c["dead_before"]][:limit],
+        "sales_up": sorted((c for c in busy if (c["rate_change"] or 0) >= 20), key=lambda c: -(c["rate_change"] or 0))[:limit],
+        "sales_down": sorted((c for c in busy if c["rate_change"] is not None and c["rate_change"] <= -20 and not c["dead_now"]), key=lambda c: c["rate_change"])[:limit],
+        "new_items": len(set(current) - set(previous)),
+        "gone_items": len(set(previous) - set(current)),
+    }
 
 
-def branch_weekly_comparison(branch: str | None = None) -> dict[str, Any]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for record in weekly_summary_records(branch):
-        grouped.setdefault(record["branch"], []).append(record)
-
-    rows: list[dict[str, Any]] = []
-    for item_branch, records in sorted(grouped.items()):
-        current = records[-1]
-        previous = records[-2] if len(records) > 1 else None
-        metrics = {}
-        for key, _label, summary_key in WEEKLY_COMPARISON_METRICS:
-            current_value = summary_metric(current["summary"], summary_key)
-            previous_value = summary_metric(previous["summary"], summary_key) if previous else None
-            metrics[key] = comparison_metric(current_value, previous_value)
-        rows.append(
-            {
-                "branch": item_branch,
-                "current_label": current["label"],
-                "current_folder": current["folder"],
-                "previous_label": previous["label"] if previous else "No previous upload",
-                "previous_folder": previous["folder"] if previous else "",
-                "upload_count": len(records),
-                "has_previous": previous is not None,
-                "metrics": metrics,
-            }
-        )
-
-    totals = {}
-    for key, _label, _summary_key in WEEKLY_COMPARISON_METRICS:
-        current_total = sum(row["metrics"][key]["current"] for row in rows)
-        comparable = [row for row in rows if row["has_previous"]]
-        previous_total = sum(row["metrics"][key]["previous"] for row in comparable)
-        totals[key] = comparison_metric(current_total, previous_total if comparable else None)
-
-    return {"rows": rows, "totals": totals}
-
-
-def product_history(sku: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    if not POS_ANALYSIS_DIR.exists():
-        return rows
-
-    for csv_path in sorted(POS_ANALYSIS_DIR.glob("*_20*/merged_items.csv"), key=lambda path: path.stat().st_mtime):
-        summary = load_analysis_summary(csv_path.parent)
-        metadata = summary.get("metadata", {})
-        folder_branch = summary_branch(metadata, csv_path.parent)
-        smart = metadata.get("source") == "smart"
-        label = metadata.get("end_date") or csv_path.parent.name.split("_", 1)[-1]
-        try:
-            with csv_path.open(encoding="utf-8-sig", newline="") as handle:
-                for row in csv.DictReader(handle):
-                    if str(row.get("ref") or "").strip() != sku:
-                        continue
-                    item_branch = (row.get("branch") or folder_branch) if smart else normalize_branch_name(row.get("branch") or folder_branch)
-                    if item_branch == "i-unknown":
-                        item_branch = folder_branch
-                    rows.append(
-                        {
-                            "label": label,
-                            "folder": csv_path.parent.name,
-                            "branch": item_branch,
-                            "name": row.get("name") or "",
-                            "category": row.get("category") or "UNCATEGORIZED",
-                            "sold": parse_num(row.get("pos_sales")),
-                            "stock": parse_num(row.get("qoh")),
-                            "sales_price": parse_num(row.get("sales_price")),
-                            "cost_price": parse_num(row.get("cost")),
-                            "stock_value": parse_num(row.get("stock_value")),
-                            "cost_value": parse_num(row.get("cost_value")),
-                            "risk_score": parse_int(row.get("risk_score"), 1),
-                            "decision_label": row.get("decision_label") or "",
-                            "tags": row.get("tags") or "",
-                            "lost_sales_value": parse_num(row.get("lost_sales_value")),
-                            "frozen_capital_value": parse_num(row.get("frozen_capital_value")),
-                            "stockout_probability_30d": parse_num(row.get("stockout_probability_30d")),
-                        }
-                    )
-        except OSError:
-            continue
-    return rows
+def product_history(sku: str) -> list[sqlite3.Row]:
+    with get_db() as db:
+        return db.execute(
+            """
+            SELECT h.*, s.period_start, s.period_end, s.period_days
+            FROM item_history h JOIN snapshots s ON s.id = h.snapshot_id
+            WHERE h.sku = ?
+            ORDER BY s.period_end, s.id
+            """,
+            (sku,),
+        ).fetchall()
 
 
 @app.route("/products/<path:sku>")
@@ -1464,7 +1577,7 @@ def product_detail(sku: str) -> str:
     else:
         product_name = sku
 
-    max_history_sales = max(max([row["sold"] for row in history] or [1]), 1)
+    max_history_sales = max(max([row["avg_daily_sales"] for row in history] or [1]), 0.0001)
     max_branch_stock = max(max([row["stock"] for row in comparison_rows] or [1]), 1)
     return render_template(
         "product.html",
@@ -1495,18 +1608,105 @@ def financial() -> str:
 
 @app.route("/weekly-comparison")
 @login_required
-def weekly_comparison() -> str:
+def weekly_comparison() -> Response:
+    return redirect(url_for("trends", **request.args))
+
+
+@app.route("/trends")
+@login_required
+def trends() -> str:
     branch = selected_branch(request.args.get("branch"))
-    comparison = branch_weekly_comparison(branch)
-    available_branches = sorted({row["branch"] for row in branch_weekly_comparison()["rows"]})
+    overview = trends_overview(branch)
+    timeline = []
+    if branch:
+        rows = snapshot_rows(branch)
+        timeline = [
+            {"row": row, "metrics": compare_snapshots(row, rows[index - 1] if index else None)}
+            for index, row in enumerate(rows)
+        ][::-1]
     return render_template(
-        "weekly_comparison.html",
-        rows=comparison["rows"],
-        totals=comparison["totals"],
-        metrics=WEEKLY_COMPARISON_METRICS,
+        "trends.html",
+        overview=overview,
+        timeline=timeline,
+        movers=snapshot_movers(branch) if branch else None,
+        metrics=TREND_METRICS,
+        max_sales=max([float(item["row"]["net_sales"] or 0) for item in timeline] or [1]) or 1,
         selected_branch=branch,
-        branch_options=available_branches,
+        branch_options=sorted({row["branch"] for row in overview}) if not branch else known_branches(),
         branch_args=branch_query_args(branch),
+    )
+
+
+def settings_from_form(form: Any) -> AnalysisSettings:
+    # A checked box sends both the hidden "0" and "1"; the last value wins.
+    data: dict[str, Any] = {spec.key: (form.getlist(spec.key) or [""])[-1] for spec in SETTING_FIELDS}
+    data = {key: value for key, value in data.items() if value != ""}
+    data["lead_time_overrides"] = [
+        {"kind": kind, "name": name, "days": days}
+        for kind, name, days in zip(form.getlist("override_kind"), form.getlist("override_name"), form.getlist("override_days"))
+    ]
+    return AnalysisSettings.from_dict(data)
+
+
+def latest_import_tokens() -> list[str]:
+    """Imports behind each branch's current data (legacy imports have no token and cannot be re-run)."""
+    with get_db() as db:
+        rows = db.execute("SELECT DISTINCT u.import_token FROM uploads u JOIN items i ON i.upload_id = u.id WHERE u.import_token != ''").fetchall()
+    return [row["import_token"] for row in rows]
+
+
+def reanalyze_import(token: str, settings: AnalysisSettings) -> int:
+    """Re-run a past import from its archived files and reviewed column mapping."""
+    folder = import_dir(token)
+    draft = load_json(folder / "draft.json" if folder else None)
+    result = load_json(folder / "result.json" if folder else None)
+    if not folder or not draft or not result:
+        return 0
+    used = {(table["file"], table["sheet"]) for table in result.get("tables", [])}
+    tables = [
+        (folder / "files" / file["stored"], spec)
+        for file in draft["files"]
+        for spec in (TableSpec.from_dict(data) for data in file["specs"])
+        if (spec.file_name, spec.sheet) in used and spec.usable
+    ]
+    if not tables:
+        return 0
+    rerun = run_smart_import(tables, POS_ANALYSIS_DIR, default_branch=draft["branch"], period_days_override=draft["period_days"], settings=settings)
+    for branch_result in rerun.branches:
+        import_pos_analysis_to_db(branch_result.output_dir, import_token=token)
+    return len(rerun.branches)
+
+
+@app.route("/settings", methods=["GET", "POST"])
+@login_required
+def analysis_settings() -> str | Response:
+    if request.method == "POST":
+        action = request.form.get("action", "save")
+        if action == "reset":
+            save_analysis_settings(AnalysisSettings())
+            flash("رجعت الإعدادات الافتراضية. / Defaults restored.", "success")
+        elif action == "reanalyze":
+            settings = load_analysis_settings()
+            count = sum(reanalyze_import(token, settings) for token in latest_import_tokens())
+            flash(f"اتعاد تحليل {count} فرع بالإعدادات الحالية. / Re-analyzed {count} branch(es).", "success")
+        else:
+            save_analysis_settings(settings_from_form(request.form))
+            flash("اتحفظت الإعدادات وهتتطبق على أي رفع جديد. / Settings saved for new uploads.", "success")
+        return redirect(url_for("analysis_settings"))
+
+    with get_db() as db:
+        suppliers = [row[0] for row in db.execute("SELECT DISTINCT supplier FROM items WHERE supplier != '' ORDER BY supplier LIMIT 300")]
+        categories = [row[0] for row in db.execute("SELECT DISTINCT category FROM items ORDER BY category LIMIT 300")]
+    settings = load_analysis_settings()
+    return render_template(
+        "settings.html",
+        settings=settings,
+        defaults=AnalysisSettings(),
+        fields=SETTING_FIELDS,
+        groups=SETTING_GROUPS,
+        suppliers=suppliers,
+        categories=categories,
+        reanalyze_count=len(latest_import_tokens()),
     )
 
 
@@ -1732,6 +1932,7 @@ def change_password() -> str | Response:
 
 
 init_db()
+backfill_snapshots()
 
 
 if __name__ == "__main__":

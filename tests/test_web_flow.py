@@ -66,10 +66,12 @@ def test_upload_review_analyze_and_browse(client):
     assert "مصر الجديدة" in result
 
     for url in ["/", "/profit-loss", "/reports/expiry", "/reports/reorder", "/reports/loss", "/financial",
-                "/weekly-comparison", "/uploads", "/data-management", "/export/expiry"]:
+                "/trends", "/trends?branch=مصر الجديدة", "/settings", "/uploads", "/data-management", "/export/expiry"]:
         assert client.get(url).status_code == 200, url
     page = client.get("/profit-loss?branch=مصر الجديدة").data.decode()
-    assert "Bebelac" in page  # the item sold below cost is named
+    in_stock_file = [item for item in generate_samples.build_branch(23, "B") if item.stock > 0]  # cost comes from there
+    for name in generate_samples.below_cost_names(in_stock_file):
+        assert name in page  # the items sold below cost are named
 
 
 def test_user_can_fix_a_misread_column_and_layout_is_remembered(client):
@@ -100,3 +102,52 @@ def test_rejects_unsupported_file(client, tmp_path):
     bad.write_bytes(b"%PDF")
     response = client.post("/upload", data={"files": [(bad.open("rb"), bad.name)]}, content_type="multipart/form-data")
     assert response.headers["Location"].endswith("/upload")
+
+
+def snapshot_count(branch: str) -> int:
+    import app as appmod
+
+    with appmod.get_db() as db:
+        return db.execute("SELECT COUNT(*) FROM snapshots WHERE branch = ?", (branch,)).fetchone()[0]
+
+
+def test_every_upload_is_kept_as_history(client):
+    branch = "المعادي"
+    files = sorted((SAMPLES / "E_monthly_uploads").glob("*.xlsx"))
+    for path in files:
+        submit_review(client, upload(client, [path], branch=branch))
+    assert snapshot_count(branch) == 3
+
+    page = client.get(f"/trends?branch={branch}").data.decode()
+    assert all(day in page for day in ["2026-08-31", "2026-09-30", "2026-10-30"])  # all three periods are listed
+    assert "Losses went up" in page or "Losses went down" in page  # item-level movers between the last two
+    history = client.get(f"/products/A1000?branch={branch}").data.decode()
+    assert history.count("<td>2026-") == 3
+
+    # Re-uploading the same period replaces that snapshot instead of duplicating it.
+    submit_review(client, upload(client, [files[-1]], branch=branch))
+    assert snapshot_count(branch) == 3
+    assert client.get("/weekly-comparison").headers["Location"].endswith("/trends")
+
+
+def test_settings_change_results_after_reanalysis(client):
+    import app as appmod
+
+    submit_review(client, upload(client, [SAMPLES / "A_arabic_pharmacy_report.xlsx"], branch="Maadi"))
+    with appmod.get_db() as db:
+        before = {row["sku"]: row["reorder_point"] for row in db.execute("SELECT sku, reorder_point FROM items")}
+
+    form = {key: str(value) for key, value in appmod.AnalysisSettings().to_dict().items() if key != "lead_time_overrides"}
+    form.update({"lead_time_days": "14", "correct_stockouts": "1", "override_kind": "category", "override_name": "Antibiotics", "override_days": "2"})
+    client.post("/settings", data=form)
+    settings = appmod.load_analysis_settings()
+    assert settings.lead_time_days == 14 and settings.lead_time_overrides == [{"kind": "category", "name": "Antibiotics", "days": 2}]
+
+    client.post("/settings", data={"action": "reanalyze"})
+    with appmod.get_db() as db:
+        rows = db.execute("SELECT sku, category, lead_time_days, reorder_point, sold FROM items").fetchall()
+    assert {row["lead_time_days"] for row in rows if row["category"] == "Antibiotics"} == {2}
+    assert {row["lead_time_days"] for row in rows if row["category"] != "Antibiotics"} == {14}
+    selling = [row for row in rows if row["sold"] > 0 and row["category"] != "Antibiotics"]
+    assert all(row["reorder_point"] > before[row["sku"]] for row in selling)  # longer lead time -> reorder earlier
+    assert snapshot_count("Maadi") == 1  # same period re-analyzed, not duplicated

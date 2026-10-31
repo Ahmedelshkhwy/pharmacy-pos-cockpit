@@ -132,6 +132,8 @@ class Item:
     sold_qty: int = 0
     sales_value: float = 0.0
     batches: list[tuple[date, int]] = field(default_factory=list)
+    daily_sales: list[int] = field(default_factory=list)  # units per day of the period
+    unavailable_days: int = 0                              # days it could not be sold (stockout)
 
     @property
     def stock(self) -> int:
@@ -176,9 +178,6 @@ def build_branch(seed: int, code_prefix: str = "P") -> list[Item]:
             demand=demand,
             daily_rate=rng.uniform(low, high),
         )
-        item.sold_qty = sum(poisson(rng, item.daily_rate) for _ in range(PERIOD_DAYS))
-        item.sales_value = round(item.sold_qty * item.price, 2)
-
         cover_days = {
             "fast": rng.choice([0, 0, 3, 8, 20, 35]),
             "normal": rng.choice([5, 15, 30, 45, 60, 250]),
@@ -189,6 +188,18 @@ def build_branch(seed: int, code_prefix: str = "P") -> list[Item]:
             stock = rng.randint(4, 40)
         else:
             stock = round(item.daily_rate * cover_days)
+        # Stockouts during the period hide real demand: the item sells nothing on those days.
+        available = [True] * PERIOD_DAYS
+        if stock == 0 and demand in {"fast", "normal"}:
+            run_out = rng.randint(45, 80)  # sold out on this day and still empty
+            available[run_out:] = [False] * (PERIOD_DAYS - run_out)
+        elif demand == "fast" and rng.random() < 0.4:
+            gap_start, gap_length = rng.randint(20, 50), rng.randint(12, 20)
+            available[gap_start:gap_start + gap_length] = [False] * gap_length
+        item.daily_sales = [poisson(rng, item.daily_rate) if open_day else 0 for open_day in available]
+        item.unavailable_days = available.count(False)
+        item.sold_qty = sum(item.daily_sales)
+        item.sales_value = round(item.sold_qty * item.price, 2)
         # Batches: most items one batch, some two, some near expiry.
         expiry_roll = rng.random()
         if expiry_roll < 0.12:
@@ -204,26 +215,31 @@ def build_branch(seed: int, code_prefix: str = "P") -> list[Item]:
             item.batches = [(first_expiry, stock)]
         items.append(item)
 
-    # A few realistic problems.
-    items[5].price = round(items[5].cost * 0.92, 2)  # sold below cost (pricing error)
-    items[5].sales_value = round(items[5].sold_qty * items[5].price, 2)
-    items[62].price = round(items[62].cost * 0.97, 2)  # baby milk sold below cost
-    items[62].sales_value = round(items[62].sold_qty * items[62].price, 2)
+    # A few realistic problems: a pricing error on a selling analgesic and on selling baby milk.
+    for category, factor in (("Analgesics", 0.92), ("Baby Care", 0.97)):
+        target = next(item for item in items if item.category == category and item.sold_qty > 0)
+        target.price = round(target.cost * factor, 2)
+        target.sales_value = round(target.sold_qty * target.price, 2)
     return items
+
+
+def below_cost_names(items: list[Item]) -> set[str]:
+    return {item.name for item in items if item.price < item.cost}
 
 
 def arabic_number(value: float | int) -> str:
     return f"{value:,}".translate(ARABIC_DIGITS)
 
 
-def write_arabic_excel(path: Path) -> None:
+def write_arabic_excel(path: Path, seed: int = 11, period_end: date = PERIOD_END) -> None:
     """Style A: single Arabic sheet with title rows, mixed formats, totals and noise."""
-    items = build_branch(11, "A")
+    items = build_branch(seed, "A")
+    period_start = period_end - timedelta(days=PERIOD_DAYS - 1)
     wb = Workbook()
     ws = wb.active
     ws.title = "تقرير الأصناف"
     ws.append(["صيدلية النور - فرع المعادي"])
-    ws.append([f"تقرير حركة الأصناف من {PERIOD_START:%d/%m/%Y} إلى {PERIOD_END:%d/%m/%Y}"])
+    ws.append([f"تقرير حركة الأصناف من {period_start:%d/%m/%Y} إلى {period_end:%d/%m/%Y}"])
     ws.append([])
     header = ["م", "كود الصنف", "اسم الصنف", "المجموعة", "الكمية المباعة", "قيمة المبيعات", "الرصيد الحالي", "سعر الشراء", "سعر البيع", "تاريخ الصلاحية"]
     ws.append(header)
@@ -266,16 +282,17 @@ def write_transactions_and_batches(sales_path: Path, stock_path: Path) -> None:
         writer.writerow(["التاريخ", "رقم الفاتورة", "الباركود", "الصنف", "الكمية", "سعر الوحدة", "الإجمالي"])
         invoice = 50000
         for item in items:
-            remaining = item.sold_qty
-            while remaining > 0:
-                qty = min(remaining, rng.choice([1, 1, 1, 2, 2, 3]))
-                remaining -= qty
-                day = PERIOD_START + timedelta(days=rng.randint(0, PERIOD_DAYS - 1))
-                invoice += 1
-                writer.writerow([day.strftime("%d/%m/%Y"), invoice, item.barcode, item.name, qty, f"{item.price:.2f}", f"{qty * item.price:.2f}"])
+            for offset, units in enumerate(item.daily_sales):
+                day = PERIOD_START + timedelta(days=offset)
+                remaining = units
+                while remaining > 0:
+                    qty = min(remaining, rng.choice([1, 1, 1, 2, 2, 3]))
+                    remaining -= qty
+                    invoice += 1
+                    writer.writerow([day.strftime("%d/%m/%Y"), invoice, item.barcode, item.name, qty, f"{item.price:.2f}", f"{qty * item.price:.2f}"])
             if item.sold_qty > 10 and rng.random() < 0.3:
                 invoice += 1
-                day = PERIOD_START + timedelta(days=rng.randint(0, PERIOD_DAYS - 1))
+                day = PERIOD_START + timedelta(days=max(i for i, units in enumerate(item.daily_sales) if units))
                 writer.writerow([day.strftime("%d/%m/%Y"), f"R{invoice}", item.barcode, item.name, -1, f"{item.price:.2f}", f"{-item.price:.2f}"])
     with stock_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -344,6 +361,11 @@ def main() -> None:
     write_transactions_and_batches(OUT_DIR / "B_sales_invoices.csv", OUT_DIR / "B_stock_batches.csv")
     write_legacy_pos(OUT_DIR / "C_legacy_pos")
     write_multi_branch(OUT_DIR / "D_chain_multi_branch.xlsx")
+    # Style E: the same branch exported every month (rolling 90 days) to try the trends page.
+    monthly = OUT_DIR / "E_monthly_uploads"
+    monthly.mkdir(exist_ok=True)
+    for month_index, period_end in enumerate([date(2026, 8, 31), date(2026, 9, 30), PERIOD_END]):
+        write_arabic_excel(monthly / f"{period_end:%Y-%m}_maadi_report.xlsx", seed=11 + 100 * (2 - month_index), period_end=period_end)
     print(f"Samples written to {OUT_DIR}")
 
 

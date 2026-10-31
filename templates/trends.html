@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% macro money(value) -%}{{ "{:,.0f}".format(value or 0) }}{%- endmacro %}
+{% macro metric_value(key, value) -%}{% if key == "margin_pct" %}{{ "{:.1f}%".format(value or 0) }}{% else %}{{ "{:,.0f}".format(value or 0) }}{% endif %}{%- endmacro %}
+{% macro change(item, key) -%}
+  {% if item.state == "new" %}<span class="change-pill flat">{% if lang == "ar" %}أول رفع{% else %}first{% endif %}</span>
+  {% else %}
+  <span class="change-pill {{ item.state }}">
+    {% if key == "margin_pct" %}{{ "{:+.1f}".format(item.delta) }} {% if lang == "ar" %}نقطة{% else %}pts{% endif %}
+    {% elif item.percent is not none %}{{ "{:+.0f}%".format(item.percent) }}
+    {% else %}{{ "{:+,.0f}".format(item.delta) }}{% endif %}
+  </span>
+  {% endif %}
+{%- endmacro %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}كل رفع بيتحفظ{% else %}Every upload is kept{% endif %}</p>
+    <h1>{{ t("trends") }}{% if selected_branch %} · {{ selected_branch }}{% endif %}</h1>
+    <p class="subtle">{% if ar %}أخضر يعني اتحسن، وأحمر يعني ساء، مقارنة بالرفع اللي قبله لنفس الفرع.{% else %}Green means better and red means worse, compared with the previous upload of the same branch.{% endif %}</p>
+  </div>
+  <form class="header-filter" method="get">
+    <label>
+      <span>{{ t("branch_filter") }}</span>
+      <select name="branch" onchange="this.form.submit()">
+        <option value="all">{{ t("all_branches") }}</option>
+        {% for branch in branch_options %}<option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>{% endfor %}
+      </select>
+    </label>
+  </form>
+</section>
+
+{% if not overview %}
+<section class="panel">
+  <p class="empty">{% if ar %}مفيش رفعات لسه. ارفع ملفات الفرع، والمرة الجاية هتشوف التغير هنا.{% else %}No uploads yet. Upload a branch, and changes will show here after the next upload.{% endif %}</p>
+  <a class="button primary" href="{{ url_for('upload') }}">{{ t("upload_excel") }}</a>
+</section>
+{% else %}
+
+<section class="panel">
+  <div class="panel-head"><h2>{% if ar %}آخر رفع مقارنة باللي قبله{% else %}Latest upload vs the one before{% endif %}</h2></div>
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>{{ t("branch") }}</th>
+        <th>{% if ar %}الفترة{% else %}Period{% endif %}</th>
+        {% for key, label_ar, label_en, good in metrics %}<th>{{ label_ar if ar else label_en }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in overview %}
+      <tr>
+        <td><a class="item-link" href="{{ url_for('trends', branch=row.branch) }}">{{ row.branch }}</a><small>{{ row.count }} {% if ar %}رفع{% else %}uploads{% endif %}</small></td>
+        <td>{{ row.current.period_end }}<small>{{ row.current.period_days }} {% if ar %}يوم{% else %}days{% endif %}</small></td>
+        {% for key, label_ar, label_en, good in metrics %}
+        <td><div class="change-cell"><strong>{{ metric_value(key, row.metrics[key].current) }}</strong>{{ change(row.metrics[key], key) }}</div></td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if selected_branch %}
+  {% if movers %}
+  <section class="section-head"><div>
+    <p class="eyebrow">{% if ar %}صنف بصنف{% else %}Item by item{% endif %}</p>
+    <h2>{% if ar %}إيه اللي اتغير من آخر رفع؟{% else %}What changed since the last upload?{% endif %}</h2>
+  </div></section>
+  {% if movers.new_items or movers.gone_items %}
+  <p class="helper-text">{% if ar %}{{ movers.new_items }} صنف جديد ظهر، و{{ movers.gone_items }} صنف اختفى من الملفات.{% else %}{{ movers.new_items }} new items appeared and {{ movers.gone_items }} disappeared from the files.{% endif %}</p>
+  {% endif %}
+  <section class="grid two">
+    {% for key, title_ar, title_en, kind, value_kind in [
+      ("worse", "الخسارة زادت", "Losses went up", "worse", "loss"),
+      ("better", "الخسارة قلت", "Losses went down", "better", "loss"),
+      ("new_stockouts", "نقص جديد وعليه طلب", "New stockouts with demand", "worse", "rate"),
+      ("recovered", "النقص اتحل", "Stockouts resolved", "better", "rate"),
+      ("sales_down", "البيع بيقل", "Selling less", "worse", "rate"),
+      ("sales_up", "البيع بيزيد", "Selling more", "better", "rate"),
+      ("new_dead", "بقى راكد", "Became dead stock", "worse", "rate")] %}
+    {% if movers[key] %}
+    <div class="panel mover-panel {{ kind }}">
+      <div class="panel-head"><h2>{{ title_ar if ar else title_en }}</h2><span class="chip">{{ movers[key]|length }}</span></div>
+      <table class="compact-table fit-table">
+        <thead><tr>
+          <th>{{ t("item") }}</th>
+          {% if value_kind == "loss" %}<th>{% if ar %}قبل{% else %}Before{% endif %}</th><th>{% if ar %}دلوقتي{% else %}Now{% endif %}</th>
+          {% else %}<th>{% if ar %}بيع/يوم قبل{% else %}Units/day before{% endif %}</th><th>{% if ar %}دلوقتي{% else %}Now{% endif %}</th>{% endif %}
+        </tr></thead>
+        <tbody>
+          {% for item in movers[key] %}
+          <tr>
+            <td><a class="item-link" href="{{ url_for('product_detail', sku=item.sku, branch=item.branch) }}">{{ item.name }}</a></td>
+            {% if value_kind == "loss" %}
+            <td>{{ money(item.loss_before) }}</td><td><strong>{{ money(item.loss_now) }}</strong></td>
+            {% else %}
+            <td>{{ "{:.2f}".format(item.rate_before) }}</td><td><strong>{{ "{:.2f}".format(item.rate_now) }}</strong>{% if item.rate_change is not none %}<small>{{ "{:+.0f}%".format(item.rate_change) }}</small>{% endif %}</td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </section>
+  {% else %}
+  <section class="panel"><p class="helper-text">{% if ar %}ده أول رفع للفرع ده. ارفع الفترة الجاية علشان تشوف الأصناف اللي اتحسنت واللي ساءت.{% else %}This is the branch's first upload. Upload the next period to see which items improved or got worse.{% endif %}</p></section>
+  {% endif %}
+
+  <section class="panel">
+    <div class="panel-head"><h2>{% if ar %}كل الرفعات{% else %}All uploads{% endif %}</h2></div>
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>{% if ar %}الفترة{% else %}Period{% endif %}</th>
+          {% for key, label_ar, label_en, good in metrics %}<th>{{ label_ar if ar else label_en }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in timeline %}
+        <tr>
+          <td>
+            {{ entry.row.period_start or "…" }} → {{ entry.row.period_end }}
+            <div class="inline-bar"><i style="width: {{ ((entry.row.net_sales or 0) / max_sales * 100)|round(1) }}%"></i><span>{{ money(entry.row.net_sales) }}</span></div>
+          </td>
+          {% for key, label_ar, label_en, good in metrics %}
+          <td><div class="change-cell"><strong>{{ metric_value(key, entry.metrics[key].current) }}</strong>{{ change(entry.metrics[key], key) }}</div></td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% elif overview|length > 1 %}
+<section class="panel"><p class="helper-text">{% if ar %}اختار فرع علشان تشوف الأصناف اللي اتحسنت واللي ساءت.{% else %}Pick a branch to see which items improved or got worse.{% endif %}</p></section>
+{% endif %}
+{% endif %}
+{% endblock %}

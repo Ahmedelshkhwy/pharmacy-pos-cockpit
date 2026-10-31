@@ -37,7 +37,7 @@
         <a href="{{ url_for('report', category='fast') }}">{{ t("fast_moving") }}</a>
         <a href="{{ url_for('report', category='slow') }}">{{ t("slow_moving") }}</a>
         <a href="{{ url_for('financial') }}">{{ t("financial_panel") }}</a>
-        <a href="{{ url_for('weekly_comparison') }}">{{ t("weekly_comparison") }}</a>
+        <a href="{{ url_for('trends') }}">{{ t("trends") }}</a>
       </div>
       <div class="nav-section">
         <span>{{ t("operations") }}</span>
@@ -46,6 +46,7 @@
       </div>
       <div class="nav-section">
         <span>{{ t("admin") }}</span>
+        <a href="{{ url_for('analysis_settings') }}">{{ t("settings") }}</a>
         <a href="{{ url_for('data_management') }}">{{ t("data_management") }}</a>
         <a href="{{ url_for('change_password') }}">{{ t("password") }}</a>
       </div>

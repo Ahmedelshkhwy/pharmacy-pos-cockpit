@@ -18,19 +18,17 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from forecast import DayWeights, Forecast, forecast_item, to_day_index
 from insights import analyze_profit_loss
 from pos_pipeline import (
-    OVERSTOCK_COVER_DAYS,
     classify_item,
     predictive_metrics,
     summarize,
     write_csv,
 )
+from settings import AnalysisSettings
 from smart_import import Quality, TableSpec, iter_records, normalize_text
 
-EXPIRY_RISK_HORIZON_DAYS = 180
-NEAR_EXPIRY_DAYS = 90
-EXCESS_COVER_DAYS = 90
 DEFAULT_BRANCH = "Main"
 
 STOCK_MEASURES = ("qoh", "batches", "stock_value", "stock_cost_value")
@@ -44,6 +42,7 @@ ITEM_COLUMNS = [
     "reorder_point", "recommended_reorder_qty", "risk_score", "decision_label", "lost_sales_value",
     "lost_profit_value", "frozen_capital_value", "excess_qty", "excess_value", "negative_margin_loss",
     "expiry", "days_left", "expired_qty", "expiry_risk_qty", "expiry_risk_value",
+    "base_daily_sales", "unavailable_days", "sales_trend", "trend_ratio", "lead_time_days",
     "unit_profit", "gross_margin_percent", "break_even_price", "max_safe_discount_percent",
     "suggested_offer_price", "offer_discount_percent", "offer_profit_per_unit", "offer_profit_if_sold",
     "signal_color", "tags",
@@ -84,6 +83,7 @@ class Part:
     cost_weight: float = 0.0
     price: float = 0.0
     rows: int = 0
+    daily: dict[date, float] = field(default_factory=dict)  # invoice files only
 
 
 @dataclass
@@ -208,6 +208,8 @@ class Merger:
             if qty is not None and qty < 0:
                 part.returns += -qty
                 quality.flag("return_lines")
+            if when and qty is not None:
+                part.daily[when] = part.daily.get(when, 0.0) + qty
         if qty is not None:
             part.qty_sold += qty
         if value is not None:
@@ -254,7 +256,7 @@ def pick(item: ItemAcc, specs: dict[int, TableSpec], group: str, has: Any) -> Pa
     return chosen
 
 
-def fefo_expiry_risk(batches: dict[str, float], avg_daily_sales: float, today: date) -> tuple[float, float, str, int | None]:
+def fefo_expiry_risk(batches: dict[str, float], avg_daily_sales: float, today: date, horizon_days: int = 180) -> tuple[float, float, str, int | None]:
     """Sell oldest-expiry first at the current velocity; units left when a batch expires are at risk."""
     dated = sorted((date.fromisoformat(key), qty) for key, qty in batches.items() if key)
     expired_qty = at_risk = 0.0
@@ -272,7 +274,7 @@ def fefo_expiry_risk(batches: dict[str, float], avg_daily_sales: float, today: d
         sellable = max(avg_daily_sales * days_left - consumed, 0.0)
         sold = min(qty, sellable)
         consumed += sold
-        if days_left <= EXPIRY_RISK_HORIZON_DAYS:
+        if days_left <= horizon_days:
             at_risk += qty - sold
     if not nearest and dated:
         nearest = dated[0][0].isoformat()
@@ -280,7 +282,16 @@ def fefo_expiry_risk(batches: dict[str, float], avg_daily_sales: float, today: d
     return expired_qty, at_risk, nearest, days_left
 
 
-def finalize_item(item: ItemAcc, branch: str, specs: dict[int, TableSpec], period_days: int, coverage: dict[str, bool], today: date) -> dict[str, Any]:
+def finalize_item(
+    item: ItemAcc,
+    branch: str,
+    specs: dict[int, TableSpec],
+    period_days: int,
+    coverage: dict[str, bool],
+    today: date,
+    settings: AnalysisSettings,
+    weights: DayWeights | None = None,
+) -> dict[str, Any]:
     sales = pick(item, specs, "sales", lambda p: p.has_sales)
     stock = pick(item, specs, "stock", lambda p: p.has_stock)
     cost_part = pick(item, specs, "cost", lambda p: p.cost_weight > 0 or p.stock_cost_value > 0)
@@ -307,6 +318,18 @@ def finalize_item(item: ItemAcc, branch: str, specs: dict[int, TableSpec], perio
     cost_value = (stock.stock_cost_value if stock and stock.stock_cost_value > 0 else 0.0) or qoh * cost
     turnover_ratio = pos_sales / qoh if qoh > 0 else 0.0
 
+    # Invoice files give a day-by-day history: estimate demand without stockout days and with
+    # more weight on recent days. Summary files only give a total, so use the plain average.
+    base_rate = pos_sales / period_days if period_days > 0 else 0.0
+    forecast = Forecast(rate=base_rate, base_rate=base_rate, available_days=period_days, unavailable_days=0)
+    if weights is not None and sales is not None and sales.daily:
+        forecast = forecast_item(
+            to_day_index(sales.daily, weights.start),
+            weights,
+            qoh=qoh_raw if coverage["stock"] else None,
+            correct_stockouts=settings.correct_stockouts,
+        )
+    lead_time = settings.lead_time_for(item.supplier, item.category)
     metrics = predictive_metrics(
         pos_sales=pos_sales,
         qoh=qoh,
@@ -316,6 +339,11 @@ def finalize_item(item: ItemAcc, branch: str, specs: dict[int, TableSpec], perio
         cost_value=cost_value,
         turnover_ratio=turnover_ratio,
         period_days=period_days,
+        avg_daily_sales=forecast.rate,
+        lead_time_days=lead_time,
+        target_cover_days=settings.target_cover_days,
+        overstock_cover_days=settings.overstock_cover_days,
+        safety_z=settings.safety_z,
     )
     avg_daily = float(metrics["avg_daily_sales"])
     if not coverage["stock"]:
@@ -329,15 +357,25 @@ def finalize_item(item: ItemAcc, branch: str, specs: dict[int, TableSpec], perio
 
     tags: list[str] = []
     if coverage["sales"] and coverage["stock"]:
-        tags = classify_item(pos_sales=pos_sales, qoh=qoh, turnover_ratio=turnover_ratio, days_cover=metrics["days_cover"])
+        tags = classify_item(
+            pos_sales=pos_sales,
+            qoh=qoh,
+            turnover_ratio=turnover_ratio,
+            days_cover=metrics["days_cover"],
+            slow_cover_days=settings.slow_moving_cover_days,
+            overstock_cover_days=settings.overstock_cover_days,
+            fast_min_units=settings.fast_min_units,
+        )
     elif coverage["sales"] and pos_sales > 0:
         tags = []
 
     unit_value = cost if cost_known else price
-    expired_qty, risk_qty, nearest_expiry, days_left = fefo_expiry_risk(expiry_part.batches if expiry_part else {}, avg_daily, today)
+    expired_qty, risk_qty, nearest_expiry, days_left = fefo_expiry_risk(
+        expiry_part.batches if expiry_part else {}, avg_daily, today, settings.expiry_horizon_days
+    )
     if expired_qty > 0:
         tags.append("expired")
-    if days_left is not None and 0 < days_left <= NEAR_EXPIRY_DAYS and qoh > 0:
+    if days_left is not None and 0 < days_left <= settings.near_expiry_days and qoh > 0:
         tags.append("near_expiry")
     if risk_qty > 0:
         tags.append("expiry_risk")
@@ -349,7 +387,7 @@ def finalize_item(item: ItemAcc, branch: str, specs: dict[int, TableSpec], perio
         tags.append("negative_margin")
     expected_lost_units = max(avg_daily * 30 - qoh, 0.0) if coverage["stock"] else 0.0
     lost_profit_value = expected_lost_units * max(unit_profit, 0.0)
-    excess_qty = max(qoh - avg_daily * EXCESS_COVER_DAYS, 0.0) if coverage["sales"] and coverage["stock"] and pos_sales > 0 else 0.0
+    excess_qty = max(qoh - avg_daily * settings.excess_cover_days, 0.0) if coverage["sales"] and coverage["stock"] and pos_sales > 0 else 0.0
     excess_value = excess_qty * unit_value
 
     decision = str(metrics["decision_label"])
@@ -399,6 +437,11 @@ def finalize_item(item: ItemAcc, branch: str, specs: dict[int, TableSpec], perio
         "expired_qty": round(expired_qty, 2),
         "expiry_risk_qty": round(risk_qty + expired_qty, 2),
         "expiry_risk_value": round((risk_qty + expired_qty) * unit_value, 2),
+        "base_daily_sales": round(forecast.base_rate, 4),
+        "unavailable_days": forecast.unavailable_days,
+        "sales_trend": forecast.trend,
+        "trend_ratio": forecast.trend_ratio,
+        "lead_time_days": lead_time,
         "tags": " | ".join(tags) if tags else "normal",
     }
     row.update(metrics)
@@ -485,8 +528,10 @@ def run_smart_import(
     default_branch: str = "",
     period_days_override: int | None = None,
     today: date | None = None,
+    settings: AnalysisSettings | None = None,
 ) -> ImportResult:
     today = today or date.today()
+    settings = settings or AnalysisSettings()
     merger = Merger(default_branch)
     sources = []
     for path, spec in tables:
@@ -506,7 +551,8 @@ def run_smart_import(
         if coverage["sales"] and not period_days:
             raise ValueError("period_required")
         period = period_days or 30
-        items = [finalize_item(item, branch_name, merger.specs, period, coverage, today) for item in branch.items]
+        weights = DayWeights(branch.first_tx, period, settings.recency_half_life_days) if period_source == "transactions" else None
+        items = [finalize_item(item, branch_name, merger.specs, period, coverage, today, settings, weights) for item in branch.items]
         branch_quality = Quality()
         item_quality(items, coverage, branch_quality)
         overall_quality.merge(branch_quality)
@@ -520,13 +566,14 @@ def run_smart_import(
             "actual_export_period_days": str(period),
             "period_source": period_source,
             "report_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "settings": settings.to_dict(),
         }
         if period_days_override and period_source in {"transactions", "report_header"} and period_days_override != period:
             metadata["period_warning"] = f"user_period_{period_days_override}_file_period_{period}"
         summary = summarize(items, metadata)
         summary["coverage"] = coverage
         summary["sources"] = sources
-        summary["profit_loss"] = analyze_profit_loss(items, period_days=period, coverage=coverage)
+        summary["profit_loss"] = analyze_profit_loss(items, period_days=period, coverage=coverage, settings=settings)
         summary["expiry_risk_value"] = round(sum(item["expiry_risk_value"] for item in items), 2)
         summary["gross_profit"] = round(sum(item["gross_profit"] for item in items), 2)
 

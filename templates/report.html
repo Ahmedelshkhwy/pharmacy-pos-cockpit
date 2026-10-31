@@ -32,6 +32,7 @@
         <th>{{ t("item") }}</th>
         <th>{{ t("ref") }}</th>
         <th>{{ t("sales") }}</th>
+        <th>{% if lang == "ar" %}بيع/يوم{% else %}Units/day{% endif %}</th>
         <th>{{ t("stock") }}</th>
         {% if show_offer_columns %}
         <th>Sale price</th>
@@ -67,6 +68,7 @@
         <td><a class="item-link" href="{{ url_for('product_detail', sku=row.sku, branch=row.branch) }}">{{ row.name }}</a></td>
         <td>{{ row.sku }}</td>
         <td>{{ row.sold|round(2) }}</td>
+        <td>{{ "{:.2f}".format(row.avg_daily_sales or 0) }}{% if row.sales_trend == "up" %} <span class="trend up" title="{{ row.trend_ratio }}">▲</span>{% elif row.sales_trend == "down" %} <span class="trend down" title="{{ row.trend_ratio }}">▼</span>{% endif %}{% if row.unavailable_days %}<small>{% if lang == "ar" %}مصحح: ناقص {{ row.unavailable_days }} يوم{% else %}corrected: out {{ row.unavailable_days }}d{% endif %}</small>{% endif %}</td>
         <td>{{ row.stock|round(2) }}</td>
         {% if show_offer_columns %}
         <td>{{ "{:,.2f}".format(row.price or 0) }}</td>
