@@ -2,85 +2,68 @@
 {% block content %}
 <section class="page-head">
   <div>
-    <p class="eyebrow">{% if lang == "ar" %}رفع ملفات POS للفرع{% else %}Branch POS raw import{% endif %}</p>
-    <h1>{{ t("branch_upload") }}</h1>
+    <p class="eyebrow">{% if lang == "ar" %}رفع ذكي{% else %}Smart import{% endif %}</p>
+    <h1>{% if lang == "ar" %}ارفع ملفاتك زي ما هي{% else %}Upload your files as they are{% endif %}</h1>
+    <p class="subtle">{% if lang == "ar" %}مش محتاج تجهز الملف أو تغير أسماء الأعمدة. الأداة بتتعرف على الأعمدة وتنضف البيانات وتوريك اللي فهمته قبل التحليل.{% else %}No template, no renaming. The tool recognises the columns, cleans the data, and shows you what it understood before analyzing.{% endif %}</p>
   </div>
+  <a class="button" href="{{ url_for('download_template') }}">{% if lang == "ar" %}نموذج اختياري{% else %}Optional template{% endif %}</a>
 </section>
 
 <form class="panel form" method="post" enctype="multipart/form-data">
-  <label class="wide">
-    <span>{{ t("branch") }}</span>
-    <select name="branch" required>
-      <option value="">{{ t("select_branch") }}</option>
-      {% for number in range(1, 11) %}
-      <option value="i-{{ number }}">i-{{ number }}</option>
-      {% endfor %}
-    </select>
+  <label class="wide dropzone">
+    <span>{% if lang == "ar" %}الملفات (واحد أو أكتر، لحد 10){% else %}Files (one or more, up to 10){% endif %}</span>
+    <input type="file" name="files" multiple required accept="{{ extensions|join(',') }}">
+    <small>{{ extensions|join("  ") }}</small>
   </label>
 
-  <label class="wide">
-    <span>{% if lang == "ar" %}مدة التحليل{% else %}Analysis period{% endif %}</span>
-    <select name="analysis_period_mode" id="analysis_period_mode" required>
-      {% for days in analysis_period_options %}
-      <option value="{{ days }}">{{ days }} {% if lang == "ar" %}يوم{% else %}days{% endif %}</option>
-      {% endfor %}
-      <option value="custom">{% if lang == "ar" %}مخصص{% else %}Custom{% endif %}</option>
-    </select>
+  <label>
+    <span>{% if lang == "ar" %}اسم الفرع (اختياري){% else %}Branch name (optional){% endif %}</span>
+    <input name="branch" list="branch-list" maxlength="60" placeholder="{% if lang == 'ar' %}مثال: فرع المعادي{% else %}e.g. Downtown{% endif %}">
+    <datalist id="branch-list">
+      {% for branch in branch_choices %}<option value="{{ branch }}">{% endfor %}
+    </datalist>
   </label>
 
-  <label class="wide" id="analysis_period_custom_wrap" hidden>
-    <span>{% if lang == "ar" %}المدة المخصصة بالأيام{% else %}Custom days{% endif %}</span>
-    <input type="number" name="analysis_period_days_custom" id="analysis_period_days_custom" min="1" step="1" placeholder="45">
+  <label>
+    <span>{% if lang == "ar" %}المبيعات عن كام يوم؟ (اختياري){% else %}Sales cover how many days? (optional){% endif %}</span>
+    <input type="number" name="period_days" min="1" max="3660" step="1" placeholder="{% if lang == 'ar' %}هيتحسب تلقائي لو ممكن{% else %}auto-detected when possible{% endif %}">
   </label>
 
-  <script>
-    (function () {
-      const mode = document.getElementById('analysis_period_mode');
-      const wrap = document.getElementById('analysis_period_custom_wrap');
-      const input = document.getElementById('analysis_period_days_custom');
-
-      function sync() {
-        const custom = mode.value === 'custom';
-        wrap.hidden = !custom;
-        input.required = custom;
-        if (!custom) input.value = '';
-      }
-
-      mode.addEventListener('change', sync);
-      sync();
-    })();
-  </script>
-
-  <label class="wide file-row">
-    <span>Product Activity</span>
-    <input type="file" name="product_activity" accept=".xlsx,.xlsm" required>
-  </label>
-
-  <label class="wide file-row">
-    <span>Stock</span>
-    <input type="file" name="stock" accept=".xlsx,.xlsm" required>
-  </label>
-
-  <label class="wide file-row">
-    <span>Stock Cost</span>
-    <input type="file" name="stock_cost" accept=".xlsx,.xlsm" required>
-  </label>
-
-  <button class="button primary" type="submit">{% if lang == "ar" %}حلّل وارفع بيانات الفرع{% else %}Analyze and import branch{% endif %}</button>
+  <button class="button primary wide" type="submit">{% if lang == "ar" %}اقرا الملفات{% else %}Read files{% endif %}</button>
 </form>
 
-<section class="panel">
-  <h2>Movement rule</h2>
-  <p class="helper-text">Choose 30, 90, 120, or Custom, then upload a Product Activity export that covers exactly the same period. The system uses that window as the sales velocity baseline, then forecasts stockout risk over 7 / 14 / 30 days.</p>
-</section>
-
-<section class="panel">
-  <h2>How files are stored</h2>
-  <div class="path-list">
-    <code>instance/pos_raw/&lt;branch&gt;/&lt;timestamp&gt;/&lt;branch&gt;-PRODUCT ACTIVITY.xlsx</code>
-    <code>instance/pos_raw/&lt;branch&gt;/&lt;timestamp&gt;/&lt;branch&gt;-STOCK.xlsx</code>
-    <code>instance/pos_raw/&lt;branch&gt;/&lt;timestamp&gt;/&lt;branch&gt;-STOCK COST.xlsx</code>
-    <code>instance/pos_analysis/&lt;branch&gt;_&lt;timestamp&gt;/</code>
+<section class="grid two">
+  <div class="panel">
+    <h2>{% if lang == "ar" %}ينفع ترفع إيه؟{% else %}What can you upload?{% endif %}</h2>
+    <ul class="plain-list">
+      {% if lang == "ar" %}
+      <li>تقرير واحد فيه كل حاجة، أو كذا ملف منفصلين: مبيعات، رصيد، تكلفة، صلاحيات.</li>
+      <li>فواتير بيع سطر بسطر. الأداة بتجمعها وتحسب المدة من التواريخ.</li>
+      <li>ملف لسلسلة فروع فيه عمود للفرع. هيتقسم لوحده.</li>
+      <li>أعمدة بالعربي أو بالإنجليزي، بأي ترتيب، وأي عدد من سطور العنوان فوق الجدول.</li>
+      {% else %}
+      <li>One report with everything, or separate files for sales, stock, cost and expiry.</li>
+      <li>Line-by-line sales invoices. They are aggregated and the period comes from the dates.</li>
+      <li>A chain file with a branch column. It is split automatically.</li>
+      <li>Arabic or English headers, any order, any number of title rows above the table.</li>
+      {% endif %}
+    </ul>
+  </div>
+  <div class="panel">
+    <h2>{% if lang == "ar" %}التنضيف التلقائي{% else %}Automatic cleaning{% endif %}</h2>
+    <ul class="plain-list">
+      {% if lang == "ar" %}
+      <li>الأرقام العربية (١٢٣)، وفواصل الآلاف، والعملة (ج.م)، والسالب بين قوسين.</li>
+      <li>كل صيغ التواريخ، ومنها صلاحية شهر/سنة زي 03/2027.</li>
+      <li>شيل صفوف الإجمالي والعناوين المتكررة والسطور المكررة.</li>
+      <li>ربط الملفات ببعض بالكود، ولو مش موجود بالباركود، ولو مش موجود باسم الصنف.</li>
+      {% else %}
+      <li>Arabic digits (١٢٣), thousand separators, currency text, negatives in brackets.</li>
+      <li>Any date format, including month/year expiry like 03/2027.</li>
+      <li>Removes totals rows, repeated headers and duplicate lines.</li>
+      <li>Joins files by code, then barcode, then item name.</li>
+      {% endif %}
+    </ul>
   </div>
 </section>
 {% endblock %}

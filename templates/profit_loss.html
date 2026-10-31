@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}التحليل المالي{% else %}Money analysis{% endif %}</p>
+    <h1>{% if ar %}سر المكسب والخسارة{% else %}Where profit comes from, where money leaks{% endif %}{% if selected_branch %} · {{ selected_branch }}{% endif %}</h1>
+    <p class="subtle">{% if ar %}كل رقم هنا مربوط بالأصناف اللي عاملاه، علشان تعرف تتصرف في إيه بالظبط.{% else %}Every number is traced to the items behind it, so you know exactly what to act on.{% endif %}</p>
+  </div>
+  <form class="header-filter" method="get">
+    <label>
+      <span>{{ t("branch_filter") }}</span>
+      <select name="branch" onchange="this.form.submit()">
+        <option value="all">{{ t("all_branches") }}</option>
+        {% for branch in branch_options %}<option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>{% endfor %}
+      </select>
+    </label>
+  </form>
+</section>
+
+{% if not pl.has_data %}
+<section class="panel">
+  <p class="empty">{% if ar %}مفيش بيانات لسه. ارفع ملفاتك الأول.{% else %}No data yet. Upload your files first.{% endif %}</p>
+  <a class="button primary" href="{{ url_for('upload') }}">{{ t("upload_excel") }}</a>
+</section>
+{% else %}
+
+{% for warning in pl.warnings %}
+<div class="message error">
+  {% if warning == "no_cost" %}{% if ar %}الملفات مفيهاش تكلفة، فالأرقام هنا مبنية على المبيعات مش الربح. ارفع ملف فيه سعر الشراء أو التكلفة علشان تشوف الربح الحقيقي.{% else %}No cost data: figures are based on sales, not profit. Upload a file with purchase price or cost to see true profit.{% endif %}
+  {% elif warning == "partial_cost" %}{% if ar %}التكلفة موجودة لـ {{ pl.cost_coverage_pct }}% بس من المبيعات. الأصناف اللي من غير تكلفة مش داخلة في حساب الربح.{% else %}Cost is known for only {{ pl.cost_coverage_pct }}% of sales; items without cost are excluded from profit.{% endif %}
+  {% elif warning == "no_stock" %}{% if ar %}مفيش رصيد في الملفات، فتحليل الراكد والنواقص والصلاحية مش متاح.{% else %}No stock data: dead stock, stockout and expiry analysis are unavailable.{% endif %}
+  {% elif warning == "no_sales" %}{% if ar %}مفيش مبيعات في الملفات، فالتحليل على قيمة المخزون بس.{% else %}No sales data: analysis covers stock value only.{% endif %}{% endif %}
+</div>
+{% endfor %}
+
+<section class="panel story">
+  <h2>{% if ar %}الخلاصة{% else %}The short story{% endif %}</h2>
+  <ol>
+    {% for line in (pl.headline_ar if ar else pl.headline_en) %}<li>{{ line }}</li>{% endfor %}
+  </ol>
+</section>
+
+<section class="metrics executive-metrics">
+  <article><span>{{ "{:,.0f}".format(pl.revenue) }}</span><p>{% if ar %}المبيعات{% else %}Sales{% endif %}</p></article>
+  <article class="metric-good"><span>{{ "{:,.0f}".format(pl.gross_profit) if pl.coverage.cost else "—" }}</span><p>{% if ar %}مجمل الربح{% else %}Gross profit{% endif %}{% if pl.coverage.cost %} · {{ "{:.1f}".format(pl.margin_pct) }}%{% endif %}</p></article>
+  <article class="metric-danger"><span>{{ "{:,.0f}".format(pl.total_loss) }}</span><p>{% if ar %}خسائر فعلية ومتوقعة{% else %}Actual & expected losses{% endif %}</p></article>
+  <article class="metric-warn"><span>{{ "{:,.0f}".format(pl.total_frozen) }}</span><p>{% if ar %}فلوس متجمدة{% else %}Frozen cash{% endif %}</p></article>
+  <article><span>{{ pl.profit_sources.pareto_count }}<small> / {{ pl.profit_sources.selling_items }}</small></span><p>{% if ar %}أصناف بتعمل 80% من {{ "الربح" if pl.coverage.cost else "المبيعات" }}{% else %}items making 80% of {{ "profit" if pl.coverage.cost else "sales" }}{% endif %}</p></article>
+</section>
+
+{% macro driver_card(driver) %}
+{% set ar = lang == "ar" %}
+{% set report_for = {"negative_margin": "loss", "expiry": "expiry", "stockout": "reorder", "dead_stock": "dead", "overstock": "overstock"} %}
+<article class="driver-card {{ driver.kind }}">
+  <header>
+    <div>
+      <h3>{{ driver.title_ar if ar else driver.title_en }}</h3>
+      <p>{{ driver.why_ar if ar else driver.why_en }}</p>
+    </div>
+    <div class="driver-amount">
+      <strong>{{ "{:,.0f}".format(driver.amount) }}</strong>
+      <small>{{ driver.items_count }} {% if ar %}صنف{% else %}items{% endif %}{% if driver.share is not none %} · {{ "{:.0f}".format(driver.share) }}%{% endif %}</small>
+    </div>
+  </header>
+  {% if driver.share is not none %}<div class="share-bar"><i style="width: {{ driver.share }}%"></i></div>{% endif %}
+  <p class="driver-action"><strong>{% if ar %}تعمل إيه:{% else %}What to do:{% endif %}</strong> {{ driver.action_ar if ar else driver.action_en }}</p>
+  <details {% if driver.kind == "loss" %}open{% endif %}>
+    <summary>{% if ar %}أكبر الأصناف{% else %}Top items{% endif %}</summary>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{% if ar %}القيمة{% else %}Amount{% endif %}</th><th>{% if ar %}التفاصيل{% else %}Detail{% endif %}</th></tr></thead>
+      <tbody>
+        {% for item in driver.top_items %}
+        <tr>
+          <td><a class="item-link" href="{{ url_for('product_detail', sku=item.ref, branch=item.branch) }}">{{ item.name }}</a></td>
+          {% if not selected_branch %}<td>{{ item.branch }}</td>{% endif %}
+          <td><strong>{{ "{:,.0f}".format(item.amount) }}</strong></td>
+          <td>{{ item.detail_ar if ar else item.detail_en }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if report_for.get(driver.key) %}
+    <a class="see-all" href="{{ url_for('report', category=report_for[driver.key], **branch_args) }}">{{ t("view_all") }} →</a>
+    {% endif %}
+  </details>
+</article>
+{% endmacro %}
+
+{% set losses = pl.drivers|selectattr("kind", "equalto", "loss")|list %}
+{% set frozen = pl.drivers|selectattr("kind", "equalto", "frozen")|list %}
+{% set infos = pl.drivers|selectattr("kind", "equalto", "info")|list %}
+
+<section class="section-head"><div>
+  <p class="eyebrow">{% if ar %}مرتبة من الأكبر للأصغر{% else %}Largest first{% endif %}</p>
+  <h2>{% if ar %}الفلوس بتضيع فين؟{% else %}Where is money lost?{% endif %}</h2>
+</div></section>
+<section class="driver-list">
+  {% for driver in losses %}{{ driver_card(driver) }}{% else %}<p class="panel helper-text">{% if ar %}مفيش خسائر واضحة في البيانات دي.{% else %}No clear losses in this data.{% endif %}</p>{% endfor %}
+</section>
+
+{% if frozen %}
+<section class="section-head"><div>
+  <p class="eyebrow">{% if ar %}مش خسارة لسه، بس فلوس واقفة{% else %}Not lost yet, but idle{% endif %}</p>
+  <h2>{% if ar %}فلوس متجمدة في المخزون{% else %}Cash frozen in stock{% endif %}</h2>
+</div></section>
+<section class="driver-list">{% for driver in frozen %}{{ driver_card(driver) }}{% endfor %}</section>
+{% endif %}
+
+<section class="section-head"><div>
+  <p class="eyebrow">{% if ar %}احميهم{% else %}Protect these{% endif %}</p>
+  <h2>{% if ar %}المكسب جاي منين؟{% else %}Where does profit come from?{% endif %}</h2>
+</div></section>
+<section class="grid two">
+  <div class="panel">
+    <div class="panel-head"><h2>{% if ar %}أهم 10 أصناف{% else %}Top 10 items{% endif %}</h2></div>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{{ t("item") }}</th><th>{% if pl.coverage.cost %}{% if ar %}الربح{% else %}Profit{% endif %}{% else %}{{ t("sales") }}{% endif %}</th><th>{% if ar %}من الإجمالي{% else %}Share{% endif %}</th>{% if pl.coverage.cost %}<th>{% if ar %}الهامش{% else %}Margin{% endif %}</th>{% endif %}</tr></thead>
+      <tbody>
+        {% for item in pl.profit_sources.top_items %}
+        <tr>
+          <td><a class="item-link" href="{{ url_for('product_detail', sku=item.ref, branch=item.branch) }}">{{ item.name }}</a>{% if not selected_branch %}<small>{{ item.branch }}</small>{% endif %}</td>
+          <td><strong>{{ "{:,.0f}".format(item.amount) }}</strong></td>
+          <td><div class="inline-bar"><i style="width: {{ [item.share * 4, 100]|min }}%"></i><span>{{ item.share }}%</span></div></td>
+          {% if pl.coverage.cost %}<td>{{ item.margin_pct }}%</td>{% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>{% if ar %}حسب المجموعة{% else %}By category{% endif %}</h2></div>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{% if ar %}المجموعة{% else %}Category{% endif %}</th><th>{{ t("sales") }}</th>{% if pl.coverage.cost %}<th>{% if ar %}الربح{% else %}Profit{% endif %}</th><th>{% if ar %}الهامش{% else %}Margin{% endif %}</th>{% endif %}<th>{{ t("frozen_capital") }}</th></tr></thead>
+      <tbody>
+        {% for row in pl.profit_sources.categories %}
+        <tr>
+          <td>{{ row.category }}</td>
+          <td>{{ "{:,.0f}".format(row.revenue) }}</td>
+          {% if pl.coverage.cost %}<td><strong>{{ "{:,.0f}".format(row.profit) }}</strong></td><td>{{ row.margin_pct if row.margin_pct is not none else "—" }}%</td>{% endif %}
+          <td>{{ "{:,.0f}".format(row.frozen) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if infos %}
+<section class="section-head"><div><h2>{% if ar %}ملاحظات تستاهل نظرة{% else %}Worth a look{% endif %}</h2></div></section>
+<section class="driver-list">{% for driver in infos %}{{ driver_card(driver) }}{% endfor %}</section>
+{% endif %}
+{% endif %}
+{% endblock %}

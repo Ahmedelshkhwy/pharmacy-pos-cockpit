@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block content %}
+{% set L = 0 if lang == "ar" else 1 %}
+{% set q = result.quality %}
+{% set score_class = "good" if q.score >= 85 else "mid" if q.score >= 70 else "bad" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if lang == "ar" %}خطوة 3 من 3: التحليل خلص{% else %}Step 3 of 3: analysis done{% endif %}</p>
+    <h1>{% if lang == "ar" %}نتيجة الرفع{% else %}Import result{% endif %}</h1>
+    <p class="subtle">{{ result.finished_at }}</p>
+  </div>
+  <div class="actions">
+    {% if result.branches|length == 1 %}
+    <a class="button primary" href="{{ url_for('profit_loss', branch=result.branches[0].branch) }}">{% if lang == "ar" %}سر المكسب والخسارة{% else %}Profit & loss drivers{% endif %}</a>
+    {% else %}
+    <a class="button primary" href="{{ url_for('profit_loss') }}">{% if lang == "ar" %}سر المكسب والخسارة{% else %}Profit & loss drivers{% endif %}</a>
+    {% endif %}
+    <a class="button" href="{{ url_for('index') }}">{{ t("dashboard") }}</a>
+  </div>
+</section>
+
+<section class="metrics">
+  <article class="quality-score {{ score_class }}">
+    <span>{{ q.score }}/100</span>
+    <p>{% if lang == "ar" %}جودة البيانات{% else %}Data quality{% endif %}</p>
+  </article>
+  <article><span>{{ "{:,}".format(q.rows_read) }}</span><p>{% if lang == "ar" %}صف اتقري{% else %}rows read{% endif %}</p></article>
+  <article><span>{{ "{:,}".format(q.rows_used) }}</span><p>{% if lang == "ar" %}صف اتستخدم{% else %}rows used{% endif %}</p></article>
+  <article><span>{{ "{:,}".format(result.branches|sum(attribute='item_count')) }}</span><p>{% if lang == "ar" %}صنف بعد الدمج{% else %}items after merge{% endif %}</p></article>
+  <article><span>{{ result.branches|length }}</span><p>{% if lang == "ar" %}فرع{% else %}branches{% endif %}</p></article>
+</section>
+
+<section class="grid two">
+  <div class="panel">
+    <div class="panel-head"><h2>{% if lang == "ar" %}الأداة نضفت إيه؟{% else %}What was cleaned{% endif %}</h2></div>
+    {% if issues %}
+    <ul class="issue-list">
+      {% for issue in issues %}
+      <li class="issue {{ issue.text[2] }}">
+        <strong>{{ "{:,}".format(issue.count) }}</strong>
+        <span>{{ issue.text[L] }}</span>
+        {% if issue.samples %}
+        <details><summary>{% if lang == "ar" %}أمثلة{% else %}examples{% endif %}</summary>
+          {% for sample in issue.samples %}<code>{{ sample }}</code>{% endfor %}
+        </details>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="helper-text">{% if lang == "ar" %}البيانات كانت نضيفة، مفيش مشاكل.{% else %}The data was clean. No issues found.{% endif %}</p>
+    {% endif %}
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>{% if lang == "ar" %}البيانات اللي اتلقت{% else %}Data found{% endif %}</h2></div>
+    {% set cov = q.coverage %}
+    <ul class="coverage-list">
+      {% for key, ar, en, missing_ar, missing_en in [
+        ("sales", "مبيعات", "Sales", "مفيش مبيعات: تحليل الحركة والنواقص مش متاح.", "No sales: movement and stockout analysis unavailable."),
+        ("stock", "رصيد", "Stock", "مفيش رصيد: الراكد والنواقص والصلاحية مش متاحين.", "No stock: dead stock, stockouts and expiry unavailable."),
+        ("cost", "تكلفة", "Cost", "مفيش تكلفة: الربح الحقيقي مش ممكن يتحسب. ارفع ملف التكلفة مع الملفات.", "No cost: true profit cannot be computed. Add a cost file."),
+        ("price", "أسعار بيع", "Sale prices", "مفيش أسعار بيع.", "No sale prices."),
+        ("expiry", "صلاحيات", "Expiry dates", "مفيش صلاحيات: خطر انتهاء الصلاحية مش متاح.", "No expiry: expiry risk unavailable."),
+        ("category", "مجموعات", "Categories", "مفيش مجموعات: التحليل هيبقى على مستوى الصنف بس.", "No categories: analysis is item-level only.")] %}
+      <li class="{{ 'yes' if cov[key] else 'no' }}">
+        <strong>{{ ar if lang == "ar" else en }}</strong>
+        {% if not cov[key] %}<small>{{ missing_ar if lang == "ar" else missing_en }}</small>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <h3>{% if lang == "ar" %}الجداول المستخدمة{% else %}Tables used{% endif %}</h3>
+    <ul class="plain-list">
+      {% for table in result.tables %}
+      <li>{{ table.file }}{% if table.sheet != table.file %} / {{ table.sheet }}{% endif %} — {% for role in table.role %}{{ table_roles[role][L] }}{% if not loop.last %}، {% endif %}{% endfor %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+
+{% for branch in result.branches %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>{{ branch.branch }}</h2>
+    <div class="actions">
+      <a href="{{ url_for('profit_loss', branch=branch.branch) }}">{% if lang == "ar" %}سر المكسب والخسارة{% else %}Profit & loss{% endif %}</a>
+      <a href="{{ url_for('index', branch=branch.branch) }}">{% if lang == "ar" %}لوحة الفرع{% else %}Branch dashboard{% endif %}</a>
+    </div>
+  </div>
+  <p class="helper-text">
+    {{ "{:,}".format(branch.item_count) }} {% if lang == "ar" %}صنف{% else %}items{% endif %} ·
+    {{ branch.period_days }} {% if lang == "ar" %}يوم{% else %}days{% endif %}
+    {% if period_sources.get(branch.period_source) %}({{ period_sources[branch.period_source][L] }}){% endif %}
+  </p>
+  {% if branch.period_warning %}
+  <p class="message error">{% if lang == "ar" %}المدة اللي كتبتها مختلفة عن مدة الملف. اتحسب على مدة الملف ({{ branch.period_days }} يوم).{% else %}The period you entered differs from the file; the file period ({{ branch.period_days }} days) was used.{% endif %}</p>
+  {% endif %}
+  <ul class="headline-list">
+    {% for line in (branch.profit_loss.headline_ar if lang == "ar" else branch.profit_loss.headline_en) %}<li>{{ line }}</li>{% endfor %}
+  </ul>
+</section>
+{% endfor %}
+{% endblock %}

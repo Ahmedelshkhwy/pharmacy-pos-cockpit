@@ -3,7 +3,7 @@ services:
     name: pharmacy-pos-cockpit
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --timeout 300 --workers 2
     envVars:
       - key: PHARMACY_SECRET_KEY
         generateValue: true
