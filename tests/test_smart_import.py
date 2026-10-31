@@ -156,7 +156,8 @@ def test_legacy_three_file_export_matches_original_pipeline(tmp_path):
     legacy = json.loads((analyze_pos_exports(folder, tmp_path / "legacy", prefix="i-3-", branch_override="i-3") / "summary.json").read_text())
     for key in ["total_items", "total_pos_sales_qty", "total_net_sales", "total_stock_value", "total_cost_value", "lost_sales_value", "frozen_capital_value", "high_risk_count"]:
         assert smart[key] == pytest.approx(legacy[key]), key
-    assert smart["tag_counts"] == legacy["tag_counts"]
+    smart_only = {"negative_margin", "expired", "near_expiry", "expiry_risk"}
+    assert {tag: n for tag, n in smart["tag_counts"].items() if tag not in smart_only} == legacy["tag_counts"]
 
 
 def test_chain_file_splits_into_branches(tmp_path):
@@ -207,7 +208,7 @@ def test_profit_loss_explains_drivers_with_items(tmp_path):
     assert {"stockout", "expiry", "negative_margin", "dead_stock", "overstock"} <= set(keys)
     assert pl["total_loss"] == pytest.approx(sum(d["amount"] for d in pl["drivers"] if d["kind"] == "loss"))
     assert all(driver["top_items"] for driver in pl["drivers"])
-    assert keys["negative_margin"]["top_items"][0]["name"].startswith("Bebelac")
+    assert {item["name"] for item in keys["negative_margin"]["top_items"]} == generate_samples.below_cost_names(generate_samples.build_branch(11, "A"))
     assert pl["headline_ar"] and pl["profit_sources"]["pareto_count"] > 0
 
 

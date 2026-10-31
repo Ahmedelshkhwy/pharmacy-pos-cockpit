@@ -1057,6 +1057,17 @@ h3 { margin: 14px 0 8px; font-size: 15px; }
 .see-all { display: inline-block; margin-top: 8px; color: var(--accent); font-weight: 700; text-decoration: none; }
 td small { display: block; }
 .fit-table { min-width: 0; }
+.change-pill.better { background: #ecfdf3; color: #05603a; }
+.change-pill.worse { background: #fff1f0; color: var(--danger); }
+.mover-panel { border-inline-start: 5px solid var(--accent); }
+.mover-panel.worse { border-inline-start-color: var(--danger); }
+.trend.up { color: #05603a; }
+.trend.down { color: var(--danger); }
+.rate-explain { line-height: 1.8; }
+.settings-group { max-width: none; margin-bottom: 18px; }
+.settings-group h2 { margin-bottom: 4px; }
+.settings-group label small { font-weight: 400; }
+.checkbox-row small { display: block; }
 .fit-table th, .fit-table td { padding-inline: 8px; }
 
 @media (max-width: 920px) {

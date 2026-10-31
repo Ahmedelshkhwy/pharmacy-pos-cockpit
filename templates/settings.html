@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}ظبط الأداة على طريقة شغلك{% else %}Tune the tool to how you work{% endif %}</p>
+    <h1>{{ t("settings") }}</h1>
+    <p class="subtle">{% if ar %}الإعدادات بتتطبق على أي رفع جديد. علشان تطبقها على البيانات الحالية، اضغط "أعد التحليل" تحت.{% else %}Settings apply to new uploads. To apply them to current data, use "Re-analyze" below.{% endif %}</p>
+  </div>
+</section>
+
+<form method="post" id="settings-form">
+  <input type="hidden" name="action" value="save">
+  {% for group_key, group_labels in groups.items() %}
+  <section class="panel form settings-group">
+    <h2 class="wide">{{ group_labels[0] if ar else group_labels[1] }}</h2>
+    {% for spec in fields if spec.group == group_key %}
+    {% set value = settings[spec.key] %}
+    {% if spec.kind == "bool" %}
+    <label class="wide checkbox-row">
+      <input type="hidden" name="{{ spec.key }}" value="0">
+      <input type="checkbox" name="{{ spec.key }}" value="1" {% if value %}checked{% endif %}>
+      <span><strong>{{ spec.label_ar if ar else spec.label_en }}</strong><small class="helper-text">{{ spec.help_ar if ar else spec.help_en }}</small></span>
+    </label>
+    {% else %}
+    <label>
+      <span>{{ spec.label_ar if ar else spec.label_en }} <small>({{ spec.unit_ar if ar else spec.unit_en }})</small></span>
+      <input type="number" name="{{ spec.key }}" value="{{ value }}" min="{{ spec.minimum }}" max="{{ spec.maximum }}" step="{{ spec.step }}">
+      <small class="helper-text">{{ spec.help_ar if ar else spec.help_en }}{% if value != defaults[spec.key] %} · {% if ar %}الافتراضي{% else %}default{% endif %}: {{ defaults[spec.key] }}{% endif %}</small>
+    </label>
+    {% endif %}
+    {% endfor %}
+  </section>
+  {% endfor %}
+
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>{% if ar %}مدة توريد مختلفة لمورد أو مجموعة{% else %}Different lead time per supplier or category{% endif %}</h2>
+        <p class="helper-text">{% if ar %}لو مورد بيورد في يومين ومورد تاني في أسبوعين، حط كل واحد هنا. المورد بيتقدم على المجموعة، والاتنين بيتقدموا على المدة العامة.{% else %}If one supplier delivers in 2 days and another in 2 weeks, add them here. Supplier beats category; both beat the general lead time.{% endif %}</p>
+      </div>
+      <button class="button" type="button" id="add-override">{% if ar %}+ إضافة{% else %}+ Add{% endif %}</button>
+    </div>
+    <table class="compact-table fit-table" id="overrides">
+      <thead><tr><th>{% if ar %}النوع{% else %}Type{% endif %}</th><th>{% if ar %}الاسم{% else %}Name{% endif %}</th><th>{% if ar %}أيام التوريد{% else %}Lead days{% endif %}</th><th></th></tr></thead>
+      <tbody>
+        {% for override in settings.lead_time_overrides + [{"kind": "supplier", "name": "", "days": ""}] %}
+        <tr>
+          <td><select name="override_kind">
+            <option value="supplier" {% if override.kind == "supplier" %}selected{% endif %}>{% if ar %}مورد{% else %}Supplier{% endif %}</option>
+            <option value="category" {% if override.kind == "category" %}selected{% endif %}>{% if ar %}مجموعة{% else %}Category{% endif %}</option>
+          </select></td>
+          <td><input name="override_name" value="{{ override.name }}" list="override-names" maxlength="80"></td>
+          <td><input type="number" name="override_days" value="{{ override.days }}" min="1" max="365"></td>
+          <td><button class="button" type="button" onclick="this.closest('tr').remove()">✕</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <datalist id="override-names">
+      {% for name in suppliers %}<option value="{{ name }}">{% endfor %}
+      {% for name in categories %}<option value="{{ name }}">{% endfor %}
+    </datalist>
+  </section>
+
+  <section class="panel review-actions">
+    <button class="button" type="submit" name="action" value="reset" formnovalidate onclick="return confirm('{% if ar %}ترجع كل الإعدادات للافتراضي؟{% else %}Restore all defaults?{% endif %}')">{% if ar %}رجّع الافتراضي{% else %}Restore defaults{% endif %}</button>
+    <button class="button primary" type="submit" name="action" value="save">{% if ar %}احفظ الإعدادات{% else %}Save settings{% endif %}</button>
+  </section>
+</form>
+
+<form class="panel review-actions" method="post">
+  <input type="hidden" name="action" value="reanalyze">
+  <p class="helper-text">
+    {% if ar %}أعد تحليل آخر رفع لكل فرع ({{ reanalyze_count }}) بالإعدادات المحفوظة، من الملفات الأصلية ومن غير ما ترفعها تاني.{% else %}Re-analyze the latest upload of each branch ({{ reanalyze_count }}) with the saved settings, from the archived files, without uploading again.{% endif %}
+  </p>
+  <button class="button primary" type="submit" {% if not reanalyze_count %}disabled{% endif %}>{% if ar %}أعد التحليل{% else %}Re-analyze{% endif %}</button>
+</form>
+
+<script>
+  document.getElementById("add-override").addEventListener("click", function () {
+    const body = document.querySelector("#overrides tbody");
+    const row = body.lastElementChild.cloneNode(true);
+    row.querySelectorAll("input").forEach(function (input) { input.value = ""; });
+    body.appendChild(row);
+  });
+</script>
+{% endblock %}

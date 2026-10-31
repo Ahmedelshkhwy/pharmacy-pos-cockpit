@@ -183,17 +183,23 @@ def predictive_metrics(
     cost_value: float,
     turnover_ratio: float,
     period_days: int,
+    avg_daily_sales: float | None = None,
+    lead_time_days: int = DEFAULT_LEAD_TIME_DAYS,
+    target_cover_days: int = TARGET_COVER_DAYS,
+    overstock_cover_days: int = OVERSTOCK_COVER_DAYS,
+    safety_z: float = 1.65,
 ) -> dict[str, float | str]:
-    avg_daily_sales = pos_sales / period_days if period_days > 0 else 0.0
+    if avg_daily_sales is None:
+        avg_daily_sales = pos_sales / period_days if period_days > 0 else 0.0
     days_cover = qoh / avg_daily_sales if avg_daily_sales > 0 else None
     stockout_probability_7d = poisson_stockout_probability(avg_daily_sales, qoh, 7)
     stockout_probability_14d = poisson_stockout_probability(avg_daily_sales, qoh, 14)
     stockout_probability_30d = poisson_stockout_probability(avg_daily_sales, qoh, 30)
 
-    lead_time_demand = avg_daily_sales * DEFAULT_LEAD_TIME_DAYS
-    safety_stock = 1.65 * math.sqrt(lead_time_demand) if lead_time_demand > 0 else 0.0
+    lead_time_demand = avg_daily_sales * lead_time_days
+    safety_stock = safety_z * math.sqrt(lead_time_demand) if lead_time_demand > 0 else 0.0
     reorder_point = lead_time_demand + safety_stock
-    target_stock = reorder_point + avg_daily_sales * TARGET_COVER_DAYS
+    target_stock = reorder_point + avg_daily_sales * target_cover_days
     recommended_reorder_qty = max(math.ceil(target_stock - qoh), 0) if avg_daily_sales > 0 else 0
     expected_lost_units_30d = max(avg_daily_sales * 30 - qoh, 0)
     lost_sales_value = expected_lost_units_30d * sales_price
@@ -213,7 +219,7 @@ def predictive_metrics(
     offer_profit_if_sold = offer_profit_per_unit * qoh
 
     frozen_capital_value = 0.0
-    if qoh > 0 and (pos_sales == 0 or (days_cover is not None and days_cover > OVERSTOCK_COVER_DAYS)):
+    if qoh > 0 and (pos_sales == 0 or (days_cover is not None and days_cover > overstock_cover_days)):
         frozen_capital_value = cost_value or stock_value
 
     risk_score = calculate_risk_score(
@@ -224,6 +230,7 @@ def predictive_metrics(
         stock_value=stock_value,
         days_cover=days_cover,
         turnover_ratio=turnover_ratio,
+        overstock_cover_days=overstock_cover_days,
     )
     decision_label = decision_for_item(
         qoh=qoh,
@@ -233,6 +240,7 @@ def predictive_metrics(
         stockout_probability_7d=stockout_probability_7d,
         stockout_probability_14d=stockout_probability_14d,
         stockout_probability_30d=stockout_probability_30d,
+        overstock_cover_days=overstock_cover_days,
     )
     signal_color = "red" if risk_score >= 8 else "orange" if risk_score >= 5 else "green"
 
@@ -269,6 +277,7 @@ def calculate_risk_score(
     stock_value: float,
     days_cover: float | None,
     turnover_ratio: float,
+    overstock_cover_days: int = OVERSTOCK_COVER_DAYS,
 ) -> int:
     score = 1.0
     score += stockout_probability_7d * 3.0
@@ -277,7 +286,7 @@ def calculate_risk_score(
         score += 3.0
     if qoh > 0 and pos_sales == 0:
         score += 2.5
-    if days_cover is not None and days_cover > OVERSTOCK_COVER_DAYS:
+    if days_cover is not None and days_cover > overstock_cover_days:
         score += 2.0
     if turnover_ratio >= 1 and pos_sales >= 20:
         score += 1.2
@@ -297,6 +306,7 @@ def decision_for_item(
     stockout_probability_7d: float,
     stockout_probability_14d: float,
     stockout_probability_30d: float,
+    overstock_cover_days: int = OVERSTOCK_COVER_DAYS,
 ) -> str:
     if qoh <= 0 and pos_sales > 0:
         return "Buy or transfer now"
@@ -306,7 +316,7 @@ def decision_for_item(
         return "Plan reorder within 14 days"
     if qoh > 0 and pos_sales == 0:
         return "Clear dead stock"
-    if days_cover is not None and days_cover > OVERSTOCK_COVER_DAYS:
+    if days_cover is not None and days_cover > overstock_cover_days:
         return "Stop buying and transfer/promote"
     if stockout_probability_30d >= 0.5:
         return "Monitor for reorder"
@@ -450,20 +460,29 @@ def merge_activity_stock(
     return merged
 
 
-def classify_item(pos_sales: float, qoh: float, turnover_ratio: float, days_cover: float | None = None) -> list[str]:
+def classify_item(
+    pos_sales: float,
+    qoh: float,
+    turnover_ratio: float,
+    days_cover: float | None = None,
+    *,
+    slow_cover_days: int = SLOW_MOVING_COVER_DAYS,
+    overstock_cover_days: int = OVERSTOCK_COVER_DAYS,
+    fast_min_units: float = 20,
+) -> list[str]:
     tags: list[str] = []
     if qoh > 0 and pos_sales == 0:
         tags.append("dead_stock")
     if qoh > 0 and pos_sales > 0 and (
         turnover_ratio < SLOW_MOVING_RATIO
-        or (days_cover is not None and days_cover > SLOW_MOVING_COVER_DAYS)
+        or (days_cover is not None and days_cover > slow_cover_days)
     ):
         tags.append("slow_moving")
     if qoh <= 0 and pos_sales > 0:
         tags.append("stockout_with_sales")
-    if pos_sales >= 20 and turnover_ratio >= 1:
+    if pos_sales >= fast_min_units and turnover_ratio >= 1:
         tags.append("fast_moving")
-    if qoh > 0 and pos_sales > 0 and days_cover is not None and days_cover > OVERSTOCK_COVER_DAYS:
+    if qoh > 0 and pos_sales > 0 and days_cover is not None and days_cover > overstock_cover_days:
         tags.append("overstock_risk")
     return tags
 

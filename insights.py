@@ -13,9 +13,10 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from settings import AnalysisSettings
+
 TOP_ITEMS = 8
 PARETO_SHARE = 0.8
-THIN_MARGIN_PERCENT = 8.0
 
 
 def num(value: Any) -> float:
@@ -44,7 +45,15 @@ def fmt(value: float) -> str:
     return f"{value:,.0f}"
 
 
-def analyze_profit_loss(items: list[dict[str, Any]], period_days: int, coverage: dict[str, bool]) -> dict[str, Any]:
+def analyze_profit_loss(
+    items: list[dict[str, Any]],
+    period_days: int,
+    coverage: dict[str, bool],
+    settings: AnalysisSettings | None = None,
+) -> dict[str, Any]:
+    settings = settings or AnalysisSettings()
+    thin_margin = settings.thin_margin_percent
+    horizon, excess_days = settings.expiry_horizon_days, settings.excess_cover_days
     has_cost = bool(coverage.get("cost"))
     has_sales = bool(coverage.get("sales"))
     has_stock = bool(coverage.get("stock"))
@@ -139,8 +148,8 @@ def analyze_profit_loss(items: list[dict[str, Any]], period_days: int, coverage:
         add_driver(
             "expiry", "loss", items, lambda i: num(i.get("expiry_risk_value")),
             ("صلاحية منتهية أو هتنتهي قبل البيع", "Expired or expiring before it sells"),
-            ("كميات انتهت صلاحيتها أو هتنتهي خلال 6 شهور قبل ما تتباع بمعدل البيع الحالي (حساب بالتشغيلة، الأقدم يتباع الأول).",
-             "Units already expired, or that will expire within 6 months before they sell at the current rate (batch-level, first-expiry-first-out)."),
+            (f"كميات انتهت صلاحيتها أو هتنتهي خلال {horizon} يوم قبل ما تتباع بمعدل البيع الحالي (حساب بالتشغيلة، الأقدم يتباع الأول).",
+             f"Units already expired, or that will expire within {horizon} days before they sell at the current rate (batch-level, first-expiry-first-out)."),
             ("اعمل عرض أو تحويل لفرع بيبيع الصنف، أو رجّعه للمورد قبل ميعاد المرتجع.", "Promote, transfer to a branch that sells it, or return to the supplier before the deadline."),
             lambda i: (f"{num(i.get('expiry_risk_qty')):,.0f} وحدة، الصلاحية {i.get('expiry') or '-'}", f"{num(i.get('expiry_risk_qty')):,.0f} units, expiry {i.get('expiry') or '-'}"),
         )
@@ -165,21 +174,21 @@ def analyze_profit_loss(items: list[dict[str, Any]], period_days: int, coverage:
         )
         add_driver(
             "overstock", "frozen", items, lambda i: num(i.get("excess_value")),
-            ("زيادة عن احتياج 3 شهور", "Stock beyond 3 months of need"),
-            ("أصناف بتتباع، لكن الرصيد أكبر من احتياج 90 يوم. الزيادة دي فلوس كان ممكن تشتري بيها أصناف ناقصة.",
-             "Items that sell, but stock exceeds 90 days of demand. The excess is cash that could fund items you are short of."),
+            (f"زيادة عن احتياج {excess_days} يوم", f"Stock beyond {excess_days} days of need"),
+            (f"أصناف بتتباع، لكن الرصيد أكبر من احتياج {excess_days} يوم. الزيادة دي فلوس كان ممكن تشتري بيها أصناف ناقصة.",
+             f"Items that sell, but stock exceeds {excess_days} days of demand. The excess is cash that could fund items you are short of."),
             ("وقّف الشراء لحد ما الرصيد ينزل، أو حوّل الزيادة.", "Stop buying until stock normalises, or transfer the excess."),
             lambda i: (f"زيادة {num(i.get('excess_qty')):,.0f} وحدة، تغطية {num(i.get('days_cover')):,.0f} يوم", f"{num(i.get('excess_qty')):,.0f} excess units, {num(i.get('days_cover')):,.0f} days cover"),
         )
     if has_cost and has_sales and ranked:
         volume_cut = sorted((num(i.get("net_sales")) for i in costed), reverse=True)
         threshold = volume_cut[max(len(volume_cut) // 5 - 1, 0)] if volume_cut else 0
-        thin = [i for i in costed if num(i.get("net_sales")) >= threshold and 0 < num(i.get("gross_margin_percent")) < THIN_MARGIN_PERCENT]
+        thin = [i for i in costed if num(i.get("net_sales")) >= threshold and 0 < num(i.get("gross_margin_percent")) < thin_margin]
         add_driver(
             "thin_margin", "info", thin, lambda i: num(i.get("net_sales")),
             ("أصناف بتبيع كتير بهامش ضعيف", "Best sellers with thin margins"),
-            (f"من أعلى 20% مبيعات، لكن هامش ربحها أقل من {THIN_MARGIN_PERCENT:.0f}%. حجم شغل كبير بربح قليل.",
-             f"Among your top 20% sellers, but with margin under {THIN_MARGIN_PERCENT:.0f}%. Lots of work for little profit."),
+            (f"من أعلى 20% مبيعات، لكن هامش ربحها أقل من {thin_margin:g}%. حجم شغل كبير بربح قليل.",
+             f"Among your top 20% sellers, but with margin under {thin_margin:g}%. Lots of work for little profit."),
             ("فاوض المورد على خصم أو بونص، أو راجع السعر.", "Negotiate supplier discount or bonus, or review the price."),
             lambda i: (f"هامش {num(i.get('gross_margin_percent')):.1f}%", f"margin {num(i.get('gross_margin_percent')):.1f}%"),
         )
