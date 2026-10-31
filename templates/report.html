@@ -14,7 +14,7 @@
   <label>
     <span>{{ t("branch_filter") }}</span>
     <select name="branch" onchange="this.form.submit()">
-      <option value="all">{{ t("all_branches") }}</option>
+      {% if not scoped_user %}<option value="all">{{ t("all_branches") }}</option>{% endif %}
       {% for branch in branch_options %}
       <option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>
       {% endfor %}

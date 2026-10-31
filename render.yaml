@@ -11,3 +11,7 @@ services:
         value: admin
       - key: PHARMACY_ADMIN_PASSWORD
         sync: false
+      # PostgreSQL connection string (Render, Supabase, Neon...). Without it data is in SQLite
+      # on the instance disk, which Render wipes on every deploy.
+      - key: DATABASE_URL
+        sync: false

@@ -1064,6 +1064,20 @@ td small { display: block; }
 .trend.up { color: #05603a; }
 .trend.down { color: var(--danger); }
 .rate-explain { line-height: 1.8; }
+.profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.profile-option { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+.profile-option.selected, .profile-option:has(input:checked) { border-color: var(--accent); background: rgba(15, 118, 110, .06); }
+.profile-option input[type="radio"] { width: 18px; height: 18px; padding: 0; margin: 0; box-shadow: none; justify-self: start; accent-color: var(--accent); }
+.profile-option small { color: var(--muted); line-height: 1.5; }
+.ask-form { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; }
+.ask-form input { flex: 1; font-size: 16px; padding: 14px 16px; }
+.answer-text { font-size: 17px; line-height: 1.8; margin: 12px 0; white-space: pre-wrap; }
+.example-chip { text-decoration: none; color: var(--ink); }
+.example-chip:hover { border-color: var(--accent); color: var(--accent); }
+.nav-user { margin: 0 0 6px; color: rgba(255,255,255,.75); font-size: 13px; }
+.branch-checks { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.branch-checks .checkbox-row { margin: 0; }
+.user-form { max-width: none; margin-top: 10px; align-items: end; }
 .button.whatsapp { background: #128c4a; color: #fff; border-color: #128c4a; }
 .digest { margin-bottom: 18px; }
 .digest summary { cursor: pointer; font-weight: 700; color: var(--accent); }

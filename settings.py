@@ -13,6 +13,7 @@ from typing import Any
 
 @dataclass
 class AnalysisSettings:
+    business_type: str = "pharmacy"
     lead_time_days: int = 7
     target_cover_days: int = 30
     service_level_a: float = 98.0
@@ -55,7 +56,17 @@ class AnalysisSettings:
             if data and spec.key in data:
                 setattr(settings, spec.key, spec.coerce(data[spec.key]))
         settings.lead_time_overrides = clean_overrides((data or {}).get("lead_time_overrides", []))
+        if (data or {}).get("business_type") in BUSINESS_PROFILES:
+            settings.business_type = data["business_type"]
         return settings
+
+    def with_profile(self, business_type: str) -> "AnalysisSettings":
+        """Suggested values for a business type; supplier/category lead times are kept."""
+        profile = BUSINESS_PROFILES.get(business_type, BUSINESS_PROFILES["pharmacy"])
+        updated = AnalysisSettings.from_dict({**AnalysisSettings().to_dict(), **profile["preset"]})
+        updated.business_type = business_type if business_type in BUSINESS_PROFILES else "pharmacy"
+        updated.lead_time_overrides = list(self.lead_time_overrides)
+        return updated
 
 
 @dataclass(frozen=True)
@@ -126,6 +137,44 @@ SETTING_FIELDS = [
 ]
 
 
+BUSINESS_PROFILES: dict[str, dict[str, Any]] = {
+    "pharmacy": {
+        "label": ("صيدلية", "Pharmacy"),
+        "description": ("كابينة قرارات لمخزون الصيدليات، مخاطر المبيعات، وأداء الفروع.", "A decision cockpit for pharmacy stock, sales risk, and branch performance."),
+        "note": ("صلاحيات مهمة، وتوريد أسبوعي تقريباً، وأصناف A لازم متخلصش.", "Expiry matters, roughly weekly supply, A items must not run out."),
+        "preset": {},
+    },
+    "supermarket": {
+        "label": ("سوبر ماركت", "Supermarket / grocery"),
+        "description": ("كابينة قرارات لمخزون السوبر ماركت: الدوران، النواقص، والهالك.", "A decision cockpit for grocery stock: turnover, stockouts, and waste."),
+        "note": ("توريد سريع، وصلاحيات قصيرة، وهوامش ضيقة.", "Fast supply, short shelf life, thin margins."),
+        "preset": {"lead_time_days": 3, "target_cover_days": 14, "slow_moving_cover_days": 45, "overstock_cover_days": 90, "excess_cover_days": 45,
+                   "fast_min_units": 50, "near_expiry_days": 30, "expiry_horizon_days": 60, "thin_margin_percent": 5},
+    },
+    "cosmetics": {
+        "label": ("مستحضرات تجميل وعناية", "Cosmetics & personal care"),
+        "description": ("كابينة قرارات لمخزون مستحضرات التجميل: الربح، والراكد، والصلاحية.", "A decision cockpit for cosmetics stock: margin, idle stock, and expiry."),
+        "note": ("هوامش أعلى، وصلاحيات طويلة، وتوريد أبطأ.", "Higher margins, long shelf life, slower supply."),
+        "preset": {"lead_time_days": 10, "target_cover_days": 45, "slow_moving_cover_days": 120, "overstock_cover_days": 240, "excess_cover_days": 120,
+                   "fast_min_units": 10, "near_expiry_days": 120, "expiry_horizon_days": 270, "thin_margin_percent": 15},
+    },
+    "spare_parts": {
+        "label": ("قطع غيار", "Spare parts"),
+        "description": ("كابينة قرارات لمخزون قطع الغيار: التوفر، والراكد، والفلوس المتجمدة.", "A decision cockpit for spare parts: availability, idle stock, and tied-up cash."),
+        "note": ("مفيش صلاحيات غالباً، وتوريد طويل، وحركة بطيئة طبيعية.", "Usually no expiry, long lead times, slow movement is normal."),
+        "preset": {"lead_time_days": 21, "target_cover_days": 60, "slow_moving_cover_days": 180, "overstock_cover_days": 365, "excess_cover_days": 180,
+                   "fast_min_units": 5, "thin_margin_percent": 10, "service_level_a": 97, "service_level_b": 93, "service_level_c": 85},
+    },
+    "general": {
+        "label": ("تجارة تجزئة عامة", "General retail"),
+        "description": ("كابينة قرارات للمخزون والمبيعات وأداء الفروع.", "A decision cockpit for stock, sales, and branch performance."),
+        "note": ("قيم متوسطة تنفع كبداية لأي نشاط.", "Middle-of-the-road values, a good start for any business."),
+        "preset": {"lead_time_days": 7, "target_cover_days": 30, "slow_moving_cover_days": 90, "overstock_cover_days": 180, "excess_cover_days": 90,
+                   "fast_min_units": 20, "thin_margin_percent": 10},
+    },
+}
+
+
 def clean_overrides(raw: Any) -> list[dict[str, Any]]:
     overrides = []
     for entry in raw if isinstance(raw, list) else []:
@@ -153,4 +202,4 @@ def loads(text: str | None) -> AnalysisSettings:
         return AnalysisSettings()
 
 
-assert {spec.key for spec in SETTING_FIELDS} == {f.name for f in fields(AnalysisSettings)} - {"lead_time_overrides"}
+assert {spec.key for spec in SETTING_FIELDS} == {f.name for f in fields(AnalysisSettings)} - {"lead_time_overrides", "business_type"}

@@ -9,7 +9,26 @@
   </div>
 </section>
 
+<form class="panel form settings-group" method="post">
+  <input type="hidden" name="action" value="apply_profile">
+  <div class="wide">
+    <h2>{% if ar %}نوع النشاط{% else %}Business type{% endif %}</h2>
+    <p class="helper-text">{% if ar %}بيحط قيم مقترحة تناسب طبيعة شغلك (مدة التوريد، والصلاحية، والحركة، والهامش)، وتقدر تعدلها تحت براحتك.{% else %}Fills in suggested values that fit how your business works (lead time, expiry, movement, margin); adjust them below as you like.{% endif %}</p>
+  </div>
+  <div class="wide profile-grid">
+    {% for key, profile in profiles.items() %}
+    <label class="profile-option {{ 'selected' if settings.business_type == key }}">
+      <input type="radio" name="business_type" value="{{ key }}" {% if settings.business_type == key %}checked{% endif %}>
+      <strong>{{ profile.label[0 if ar else 1] }}</strong>
+      <small>{{ profile.note[0 if ar else 1] }}</small>
+    </label>
+    {% endfor %}
+  </div>
+  <button class="button primary" type="submit">{% if ar %}طبّق القيم المقترحة{% else %}Apply suggested values{% endif %}</button>
+</form>
+
 <form method="post" id="settings-form">
+  <input type="hidden" name="business_type" value="{{ settings.business_type }}">
   <input type="hidden" name="action" value="save">
   {% for group_key, group_labels in groups.items() %}
   <section class="panel form settings-group">
@@ -64,7 +83,7 @@
   </section>
 
   <section class="panel review-actions">
-    <button class="button" type="submit" name="action" value="reset" formnovalidate onclick="return confirm('{% if ar %}ترجع كل الإعدادات للافتراضي؟{% else %}Restore all defaults?{% endif %}')">{% if ar %}رجّع الافتراضي{% else %}Restore defaults{% endif %}</button>
+    <button class="button" type="submit" name="action" value="reset" formnovalidate onclick="return confirm('{% if ar %}ترجع كل الإعدادات للافتراضي؟{% else %}Restore all defaults?{% endif %}')">{% if ar %}رجّع القيم المقترحة{% else %}Restore suggested values{% endif %}</button>
     <button class="button primary" type="submit" name="action" value="save">{% if ar %}احفظ الإعدادات{% else %}Save settings{% endif %}</button>
   </section>
 </form>
@@ -75,6 +94,27 @@
     {% if ar %}أعد تحليل آخر رفع لكل فرع ({{ reanalyze_count }}) بالإعدادات المحفوظة، من الملفات الأصلية ومن غير ما ترفعها تاني.{% else %}Re-analyze the latest upload of each branch ({{ reanalyze_count }}) with the saved settings, from the archived files, without uploading again.{% endif %}
   </p>
   <button class="button primary" type="submit" {% if not reanalyze_count %}disabled{% endif %}>{% if ar %}أعد التحليل{% else %}Re-analyze{% endif %}</button>
+</form>
+
+<form class="panel form" method="post">
+  <div class="wide">
+    <h2>{% if ar %}مساعد Claude لأسئلة البيانات (اختياري){% else %}Claude for data questions (optional){% endif %}</h2>
+    <p class="helper-text">
+      {% if ar %}من غيره صفحة "اسأل بياناتك" بتشتغل بالمحرك الداخلي المجاني. مع المفتاح، Claude بيفهم أي صياغة، وبيستخدم نفس الاستعلامات الآمنة على الفروع المسموحة للمستخدم بس. كل سؤال بيتحسب عليه تكلفة بسيطة من حساب Anthropic.
+      {% else %}Without it, "Ask your data" uses the free built-in engine. With a key, Claude understands any phrasing and runs the same safe queries, limited to the user's branches. Each question costs a little on your Anthropic account.{% endif %}
+    </p>
+    <p><strong>{% if ar %}الحالة:{% else %}Status:{% endif %}</strong>
+      {% if ai_key_source == "env" %}{% if ar %}شغال من متغير البيئة ANTHROPIC_API_KEY{% else %}on, from the ANTHROPIC_API_KEY environment variable{% endif %}
+      {% elif ai_key_source == "saved" %}{% if ar %}شغال بمفتاح محفوظ{% else %}on, with a saved key{% endif %}
+      {% else %}{% if ar %}مقفول (المحرك الداخلي){% else %}off (built-in engine){% endif %}{% endif %}
+      · {% if ar %}قاعدة البيانات:{% else %}Database:{% endif %} {{ database_label }}
+    </p>
+  </div>
+  {% if ai_key_source != "env" %}
+  <label class="wide"><span>{% if ar %}مفتاح Anthropic API{% else %}Anthropic API key{% endif %}</span><input type="password" name="anthropic_api_key" autocomplete="off" placeholder="sk-ant-..."></label>
+  <button class="button primary" type="submit" name="action" value="save_ai_key">{% if ar %}احفظ المفتاح{% else %}Save key{% endif %}</button>
+  {% if ai_key_source == "saved" %}<button class="button danger" type="submit" name="action" value="remove_ai_key">{% if ar %}شيل المفتاح{% else %}Remove key{% endif %}</button>{% endif %}
+  {% endif %}
 </form>
 
 <script>

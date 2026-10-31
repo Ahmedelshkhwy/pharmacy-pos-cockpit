@@ -27,6 +27,7 @@
         <a href="{{ url_for('index') }}">{{ t("dashboard") }}</a>
         <a class="nav-highlight" href="{{ url_for('profit_loss') }}">{{ t("profit_loss") }}</a>
         <a class="nav-highlight" href="{{ url_for('action_center') }}">{{ t("actions") }}</a>
+        <a class="nav-highlight" href="{{ url_for('ask_page') }}">{{ t("ask") }}</a>
         <a href="{{ url_for('report', category='reorder') }}">{{ t("reorder_now") }}</a>
         <a href="{{ url_for('report', category='expiry') }}">{{ t("expiry_risk") }}</a>
         <a href="{{ url_for('report', category='risk') }}">{{ t("high_risk") }}</a>
@@ -43,16 +44,20 @@
       </div>
       <div class="nav-section">
         <span>{{ t("operations") }}</span>
-        <a href="{{ url_for('upload') }}">{{ t("smart_upload") }}</a>
+        {% if can("upload") %}<a href="{{ url_for('upload') }}">{{ t("smart_upload") }}</a>{% endif %}
         <a href="{{ url_for('uploads') }}">{{ t("imports") }}</a>
       </div>
       <div class="nav-section">
         <span>{{ t("admin") }}</span>
+        {% if can("admin") %}
         <a href="{{ url_for('analysis_settings') }}">{{ t("settings") }}</a>
+        <a href="{{ url_for('users_page') }}">{{ t("users") }}</a>
         <a href="{{ url_for('data_management') }}">{{ t("data_management") }}</a>
+        {% endif %}
         <a href="{{ url_for('change_password') }}">{{ t("password") }}</a>
       </div>
       <div class="nav-footer">
+      {% if user %}<p class="nav-user">{{ user.username }} · {{ roles[user.role][0 if lang == "ar" else 1].split(":")[0] }}</p>{% endif %}
       <form class="language-form" method="post" action="{{ url_for('set_language', lang_code=next_lang) }}">
         <button type="submit">{{ t("language_toggle") }}</button>
       </form>

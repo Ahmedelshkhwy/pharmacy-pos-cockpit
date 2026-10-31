@@ -91,6 +91,7 @@ SYNONYMS: dict[str, list[str]] = {
     "ref": [
         "ref", "reference", "product ref", "code", "item code", "product code", "item no", "item number",
         "item id", "product id", "sku", "stock code", "article", "article no", "plu", "internal code",
+        "part number", "part no", "part #", "oem", "oem no", "رقم القطعه", "كود القطعه",
         "كود", "الكود", "كود الصنف", "رقم الصنف", "كود المنتج", "رمز الصنف", "الرمز", "كود الدواء",
     ],
     "barcode": ["barcode", "bar code", "ean", "ean13", "upc", "gtin", "international code", "الباركود", "باركود", "الكود الدولي"],
@@ -940,14 +941,19 @@ def load_profiles(path: Path) -> dict[str, Any]:
         return {}
 
 
-def save_profile(path: Path, spec: TableSpec) -> None:
-    profiles = load_profiles(path)
-    profiles[spec.signature] = {
+def profile_entry(spec: TableSpec) -> dict[str, Any]:
+    """What gets remembered about a confirmed file layout."""
+    return {
         "file_name": spec.file_name,
         "sheet": spec.sheet,
         "saved_at": datetime.now().isoformat(timespec="seconds"),
         "columns": [asdict(column) for column in spec.columns],
     }
+
+
+def save_profile(path: Path, spec: TableSpec) -> None:
+    profiles = load_profiles(path)
+    profiles[spec.signature] = profile_entry(spec)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(profiles, ensure_ascii=False, indent=2), encoding="utf-8")
 
