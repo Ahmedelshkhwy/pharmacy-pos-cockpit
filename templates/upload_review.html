@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block content %}
+{% set L = 0 if lang == "ar" else 1 %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if lang == "ar" %}خطوة 2 من 3: راجع اللي الأداة فهمته{% else %}Step 2 of 3: review what was understood{% endif %}</p>
+    <h1>{% if lang == "ar" %}مراجعة الأعمدة{% else %}Column review{% endif %}</h1>
+    <p class="subtle">{% if lang == "ar" %}لو أي عمود اتفهم غلط غيّره من القائمة. اختياراتك بتتحفظ، والمرة الجاية نفس شكل الملف هيتقري لوحده.{% else %}If a column was misread, change it. Your choices are saved, so the same file layout is read automatically next time.{% endif %}</p>
+  </div>
+  <a class="button" href="{{ url_for('upload') }}">{% if lang == "ar" %}ابدأ من الأول{% else %}Start over{% endif %}</a>
+</section>
+
+<form method="post">
+  <section class="panel form">
+    <label>
+      <span>{% if lang == "ar" %}اسم الفرع{% else %}Branch name{% endif %}</span>
+      <input name="branch" list="branch-list" maxlength="60" value="{{ draft.branch or branch_hint }}" placeholder="{% if lang == 'ar' %}لو الملف فيه عمود فرع سيبها فاضية{% else %}leave empty if the file has a branch column{% endif %}">
+      <datalist id="branch-list">{% for branch in branch_choices %}<option value="{{ branch }}">{% endfor %}</datalist>
+      <small class="helper-text">{% if lang == "ar" %}رفع فرع موجود بيحدّث بياناته الحالية، والتاريخ القديم بيفضل في المقارنات.{% else %}Uploading an existing branch replaces its current data; history stays in comparisons.{% endif %}</small>
+    </label>
+    <label class="{{ 'needs-input' if needs_period else '' }}">
+      <span>{% if lang == "ar" %}المبيعات عن كام يوم؟{% else %}Sales cover how many days?{% endif %}{% if needs_period %} *{% endif %}</span>
+      <input type="number" name="period_days" min="1" max="3660" value="{{ draft.period_days or '' }}" {% if needs_period %}required{% endif %}
+             placeholder="{% if needs_period %}{% if lang == 'ar' %}مطلوب: مش لاقي تواريخ في الملف{% else %}required: no dates found in the file{% endif %}{% else %}{% if lang == 'ar' %}اتعرفت من الملف{% else %}detected from the file{% endif %}{% endif %}">
+      <small class="helper-text">{% if lang == "ar" %}مهمة لحساب معدل البيع اليومي. لو الملف فيه تواريخ فواتير أو فترة التقرير، الأداة بتحسبها هي.{% else %}Needed for the daily sales rate. If the file has invoice dates or a report period, it is computed for you.{% endif %}</small>
+    </label>
+  </section>
+
+  {% for file in draft.files %}
+  {% set file_index = loop.index0 %}
+  {% for spec in file.specs %}
+  {% set table_index = loop.index0 %}
+  <section class="panel table-review {{ '' if spec.usable else 'unusable' }}">
+    <div class="panel-head">
+      <div>
+        <h2>{{ file.original }}{% if file.specs|length > 1 %} <small>/ {{ spec.sheet }}</small>{% endif %}</h2>
+        <div class="chips">
+          {% for role in spec.role %}<span class="chip">{{ table_roles[role][L] }}</span>{% endfor %}
+          {% if spec.profile_applied %}<span class="chip ok">{% if lang == "ar" %}شكل ملف محفوظ{% else %}saved layout{% endif %}</span>{% endif %}
+          {% if spec.header_row > 0 %}<span class="chip">{% if lang == "ar" %}الجدول بيبدأ من سطر {{ spec.header_row + 1 }}{% else %}table starts at row {{ spec.header_row + 1 }}{% endif %}</span>{% endif %}
+          {% if spec.meta.start_date %}<span class="chip">{{ spec.meta.start_date }} → {{ spec.meta.end_date }}</span>{% endif %}
+          {% if spec.meta.period_days %}<span class="chip">{{ spec.meta.period_days }} {% if lang == "ar" %}يوم{% else %}days{% endif %}</span>{% endif %}
+        </div>
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" name="use-{{ file_index }}-{{ table_index }}" value="1" {% if spec.usable %}checked{% endif %}>
+        <span>{% if lang == "ar" %}استخدم الجدول ده{% else %}Use this table{% endif %}</span>
+      </label>
+    </div>
+    {% if not spec.usable %}
+    <p class="helper-text">
+      {% if spec.reason == "no_identity" %}{% if lang == "ar" %}مش لاقي عمود كود أو اسم صنف. حدده من القائمة لو موجود.{% else %}No item code or name column found. Pick it below if present.{% endif %}
+      {% else %}{% if lang == "ar" %}مش لاقي كميات أو أرصدة أو أسعار. غالباً ورقة ملخص، وممكن تتجاهلها.{% else %}No quantities, stock, or prices found. Probably a summary sheet you can skip.{% endif %}{% endif %}
+    </p>
+    {% endif %}
+    <table class="mapping-table">
+      <thead>
+        <tr>
+          <th>{% if lang == "ar" %}العمود في الملف{% else %}Column in file{% endif %}</th>
+          <th>{% if lang == "ar" %}معناه{% else %}Meaning{% endif %}</th>
+          <th>{% if lang == "ar" %}الثقة{% else %}Confidence{% endif %}</th>
+          <th>{% if lang == "ar" %}أمثلة بعد التنضيف{% else %}Samples after cleaning{% endif %}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for column in spec.columns %}
+        <tr class="{{ 'mapped' if column.field and column.field != '_ignore' else 'unmapped' }}">
+          <td><strong>{{ column.header }}</strong></td>
+          <td>
+            <select name="map-{{ file_index }}-{{ table_index }}-{{ column.index }}">
+              {% for key, label in field_choices %}
+              <option value="{{ key }}" {% if key == column.field %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td>
+            {% if column.field and column.field != "_ignore" %}
+            {% set level = "high" if column.confidence >= 0.85 else "mid" if column.confidence >= 0.6 else "low" %}
+            <span class="confidence {{ level }}">{{ (column.confidence * 100)|round|int }}%</span>
+            <small>{% if column.method == "content" %}{% if lang == "ar" %}من المحتوى{% else %}from content{% endif %}{% elif column.method == "user" %}{% if lang == "ar" %}اختيارك{% else %}your choice{% endif %}{% elif spec.profile_applied %}{% if lang == "ar" %}محفوظ{% else %}saved{% endif %}{% else %}{% if lang == "ar" %}من الاسم{% else %}from header{% endif %}{% endif %}</small>
+            {% endif %}
+          </td>
+          <td class="samples">
+            {% if column.field and column.field != "_ignore" %}
+            {% for row in spec.preview[:3] %}<code>{{ row.get(column.field) if row.get(column.field) is not none else "—" }}</code>{% endfor %}
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endfor %}
+  {% endfor %}
+
+  <section class="panel review-actions">
+    <p class="helper-text">{% if lang == "ar" %}الخطوة الجاية: التنضيف والربط بين الملفات وحساب المكسب والخسارة. الملفات الكبيرة ممكن تاخد دقيقة.{% else %}Next: cleaning, joining files, and computing profit and loss. Large files can take a minute.{% endif %}</p>
+    <button class="button primary" type="submit" onclick="this.disabled=true; this.form.submit(); this.textContent='{% if lang == 'ar' %}جاري التحليل...{% else %}Analyzing...{% endif %}';">{% if lang == "ar" %}حلّل البيانات{% else %}Analyze{% endif %}</button>
+  </section>
+</form>
+{% endblock %}

@@ -25,7 +25,9 @@
       <div class="nav-section">
         <span>{{ t("decision_queue") }}</span>
         <a href="{{ url_for('index') }}">{{ t("dashboard") }}</a>
-        <a href="{{ url_for('report', category='expiry') }}">{{ t("reorder_now") }}</a>
+        <a class="nav-highlight" href="{{ url_for('profit_loss') }}">{{ t("profit_loss") }}</a>
+        <a href="{{ url_for('report', category='reorder') }}">{{ t("reorder_now") }}</a>
+        <a href="{{ url_for('report', category='expiry') }}">{{ t("expiry_risk") }}</a>
         <a href="{{ url_for('report', category='risk') }}">{{ t("high_risk") }}</a>
         <a href="{{ url_for('report', category='dead') }}">{{ t("dead_stock") }}</a>
       </div>
@@ -39,7 +41,7 @@
       </div>
       <div class="nav-section">
         <span>{{ t("operations") }}</span>
-        <a href="{{ url_for('upload') }}">{{ t("branch_upload") }}</a>
+        <a href="{{ url_for('upload') }}">{{ t("smart_upload") }}</a>
         <a href="{{ url_for('uploads') }}">{{ t("imports") }}</a>
       </div>
       <div class="nav-section">

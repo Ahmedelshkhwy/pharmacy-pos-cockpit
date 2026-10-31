@@ -5,19 +5,30 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
-from dataclasses import dataclass
 from datetime import date, datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, flash, redirect, render_template, request, send_file, session, url_for
-from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from pos_pipeline import analyze_pos_exports, normalize_branch_name
+from insights import analyze_profit_loss
+from pos_pipeline import normalize_branch_name
+from smart_import import (
+    FIELD_LABELS,
+    SUPPORTED_EXTENSIONS,
+    TableSpec,
+    apply_user_mapping,
+    detect_file,
+    field_choices,
+    load_profiles,
+    save_profile,
+)
+from smart_pipeline import branch_slug, clean_branch_label, run_smart_import
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -25,15 +36,12 @@ DATA_DIR = BASE_DIR / "instance"
 UPLOAD_DIR = DATA_DIR / "uploads"
 POS_RAW_DIR = DATA_DIR / "pos_raw"
 POS_ANALYSIS_DIR = DATA_DIR / "pos_analysis"
+IMPORTS_DIR = DATA_DIR / "imports"
+MAPPING_PROFILES_PATH = DATA_DIR / "mapping_profiles.json"
 DB_PATH = DATA_DIR / "pharmacy.db"
 BRANCH_TEMPLATE_PATH = BASE_DIR / "pharmacy_branch_upload_template.xlsx"
 
-ALLOWED_EXTENSIONS = {".xlsx", ".xlsm"}
-ALLOWED_ANALYSIS_PERIOD_DAYS = (30, 90, 120)
-DEAD_STOCK_MAX_SALES = 0
-SLOW_MOVING_RATIO = 0.05
-EXPIRY_WARNING_DAYS = 90
-EXPIRY_CRITICAL_DAYS = 30
+MAX_UPLOAD_FILES = 10
 DEFAULT_ADMIN_USERNAME = os.environ.get("PHARMACY_ADMIN_USERNAME", "admin")
 DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", "admin123")
 
@@ -61,25 +69,35 @@ ITEM_EXTRA_COLUMNS = {
     "offer_profit_per_unit": "REAL NOT NULL DEFAULT 0",
     "offer_profit_if_sold": "REAL NOT NULL DEFAULT 0",
     "signal_color": "TEXT NOT NULL DEFAULT 'green'",
+    "barcode": "TEXT NOT NULL DEFAULT ''",
+    "supplier": "TEXT NOT NULL DEFAULT ''",
+    "net_sales": "REAL NOT NULL DEFAULT 0",
+    "returns_qty": "REAL NOT NULL DEFAULT 0",
+    "cost_known": "INTEGER NOT NULL DEFAULT 0",
+    "gross_profit": "REAL NOT NULL DEFAULT 0",
+    "lost_profit_value": "REAL NOT NULL DEFAULT 0",
+    "excess_qty": "REAL NOT NULL DEFAULT 0",
+    "excess_value": "REAL NOT NULL DEFAULT 0",
+    "negative_margin_loss": "REAL NOT NULL DEFAULT 0",
+    "expired_qty": "REAL NOT NULL DEFAULT 0",
+    "expiry_risk_qty": "REAL NOT NULL DEFAULT 0",
+    "expiry_risk_value": "REAL NOT NULL DEFAULT 0",
 }
 
 UPLOAD_EXTRA_COLUMNS = {
     "analysis_period_days": "INTEGER NOT NULL DEFAULT 90",
+    "coverage": "TEXT NOT NULL DEFAULT ''",
+    "quality_score": "INTEGER",
+    "import_token": "TEXT NOT NULL DEFAULT ''",
 }
 
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("PHARMACY_SECRET_KEY", "change-this-secret-key")
-app.config["MAX_CONTENT_LENGTH"] = 24 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 app.jinja_env.auto_reload = True
-
-POS_UPLOAD_FILES = {
-    "product_activity": "PRODUCT ACTIVITY",
-    "stock": "STOCK",
-    "stock_cost": "STOCK COST",
-}
 
 WEEKLY_COMPARISON_METRICS = [
     ("sales", "Sales", "total_net_sales"),
@@ -104,6 +122,10 @@ TRANSLATIONS = {
         "financial_panel": "Financial Panel",
         "weekly_comparison": "Weekly Comparison",
         "branch_upload": "Branch Upload",
+        "smart_upload": "Upload files",
+        "profit_loss": "Profit & Loss Drivers",
+        "expiry_risk": "Expiry Risk",
+        "selling_below_cost": "Selling Below Cost",
         "imports": "Imports",
         "data_management": "Data Management",
         "password": "Password",
@@ -168,6 +190,10 @@ TRANSLATIONS = {
         "financial_panel": "الماليات",
         "weekly_comparison": "مقارنة أسبوعية",
         "branch_upload": "رفع ملفات فرع",
+        "smart_upload": "ارفع ملفات",
+        "profit_loss": "سر المكسب والخسارة",
+        "expiry_risk": "خطر الصلاحية",
+        "selling_below_cost": "بيع بأقل من التكلفة",
         "imports": "سجل الرفع",
         "data_management": "إدارة البيانات",
         "password": "كلمة المرور",
@@ -220,24 +246,6 @@ TRANSLATIONS = {
         "no_rows_report": "مفيش صفوف في التقرير ده.",
     },
 }
-
-
-@dataclass
-class ParsedRow:
-    name: str
-    sku: str
-    sold: float
-    stock: float
-    price: float
-    expiry: date | None
-
-    @property
-    def stock_value(self) -> float:
-        return self.stock * self.price
-
-    @property
-    def turnover_ratio(self) -> float:
-        return self.sold / self.stock if self.stock > 0 else 0
 
 
 def get_db() -> sqlite3.Connection:
@@ -374,20 +382,6 @@ def set_language(lang_code: str) -> Response:
     return redirect(request.referrer or url_for("index"))
 
 
-def normalize_header(value: Any) -> str:
-    return str(value or "").strip().casefold()
-
-
-def find_col(headers: list[str], candidates: list[str]) -> int:
-    normalized = [h.casefold() for h in headers]
-    for candidate in candidates:
-        needle = candidate.casefold()
-        for index, header in enumerate(normalized):
-            if needle in header:
-                return index
-    return -1
-
-
 def parse_num(value: Any) -> float:
     if value is None or value == "":
         return 0
@@ -398,191 +392,6 @@ def parse_num(value: Any) -> float:
         return float(cleaned) if cleaned else 0
     except ValueError:
         return 0
-
-
-def parse_date(value: Any) -> date | None:
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value).strip()
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
-    return None
-
-
-def parse_analysis_period_days(value: Any) -> int | None:
-    try:
-        period = int(str(value).strip())
-    except (TypeError, ValueError, AttributeError):
-        return None
-    return period if period > 0 else None
-
-
-def extract_branch_name(filename: str) -> str:
-    stem = Path(filename).stem
-    stem = re.sub(r"_?\d{4}-\d{2}-\d{2}", "", stem)
-    return stem.replace("_", " ").strip() or "فرع غير محدد"
-
-
-def read_excel_rows(path: Path) -> list[ParsedRow]:
-    workbook = load_workbook(path, data_only=True, read_only=True)
-    sheet = workbook.active
-    rows = list(sheet.iter_rows(values_only=True))
-    if len(rows) < 2:
-        return []
-
-    headers = [normalize_header(h) for h in rows[0]]
-    columns = {
-        "name": find_col(headers, ["اسم الصنف", "item name", "product name", "الصنف", "name"]),
-        "sku": find_col(headers, ["كود الصنف", "sku", "barcode", "كود", "رمز"]),
-        "sold": find_col(headers, ["الكمية المباعة", "مباع", "sold", "qty sold", "sales"]),
-        "stock": find_col(headers, ["الرصيد الحالي", "رصيد", "stock", "balance", "qty"]),
-        "expiry": find_col(headers, ["تاريخ انتهاء الصلاحية", "انتهاء", "expiry", "exp date", "expiry date"]),
-        "price": find_col(headers, ["سعر الوحدة", "سعر", "price", "unit price"]),
-    }
-
-    parsed: list[ParsedRow] = []
-    for row in rows[1:]:
-        name = str(row[columns["name"]] or "").strip() if columns["name"] >= 0 else ""
-        sku = str(row[columns["sku"]] or "").strip() if columns["sku"] >= 0 else ""
-        if not name and not sku:
-            continue
-        parsed.append(
-            ParsedRow(
-                name=name,
-                sku=sku,
-                sold=parse_num(row[columns["sold"]]) if columns["sold"] >= 0 else 0,
-                stock=parse_num(row[columns["stock"]]) if columns["stock"] >= 0 else 0,
-                price=parse_num(row[columns["price"]]) if columns["price"] >= 0 else 0,
-                expiry=parse_date(row[columns["expiry"]]) if columns["expiry"] >= 0 else None,
-            )
-        )
-    return parsed
-
-
-def classify_rows(rows: list[ParsedRow]) -> list[dict[str, Any]]:
-    ratios = [row.turnover_ratio for row in rows if row.stock > 0]
-    avg_ratio = sum(ratios) / len(ratios) if ratios else 0
-    today = date.today()
-    analyzed: list[dict[str, Any]] = []
-
-    for row in rows:
-        tags: list[str] = []
-        reason = ""
-        urgency = ""
-        action = ""
-        days_left = None
-
-        if row.stock > 0 and row.sold == DEAD_STOCK_MAX_SALES:
-            tags.append("راكد")
-            reason = "مبيعات = صفر هذا الأسبوع - يحتاج عرض ترويجي"
-        elif row.stock > 0 and 0 < row.turnover_ratio < SLOW_MOVING_RATIO:
-            tags.append("بطيء")
-        elif row.turnover_ratio > avg_ratio * 2 and row.sold > 0:
-            tags.append("سريع")
-
-        if row.expiry:
-            days_left = (row.expiry - today).days
-            if 0 <= days_left <= EXPIRY_WARNING_DAYS:
-                tags.append("قرب انتهاء")
-                urgency = "خطر" if days_left <= EXPIRY_CRITICAL_DAYS else "تحذير"
-                if days_left <= 14:
-                    action = "عرض فوري أو إرجاع للمورد"
-                elif days_left <= 30:
-                    action = "Bundle أو تخفيض سريع"
-                else:
-                    action = "ضع في واجهة العرض"
-
-        analyzed.append(
-            {
-                "name": row.name,
-                "sku": row.sku,
-                "sold": row.sold,
-                "stock": row.stock,
-                "price": row.price,
-                "stock_value": row.stock_value,
-                "turnover_ratio": row.turnover_ratio,
-                "expiry": row.expiry.isoformat() if row.expiry else "",
-                "days_left": days_left,
-                "tags": " | ".join(tags) if tags else "طبيعي",
-                "urgency": urgency,
-                "action": action,
-                "reason": reason,
-            }
-        )
-    return analyzed
-
-
-def save_upload(
-    filename: str,
-    branch: str,
-    week_date: str,
-    rows: list[dict[str, Any]],
-    analysis_period_days: int = 90,
-) -> int:
-    counts = {
-        "dead": sum("راكد" in r["tags"] for r in rows),
-        "expiry": sum("قرب انتهاء" in r["tags"] for r in rows),
-        "slow": sum("بطيء" in r["tags"] for r in rows),
-        "fast": sum("سريع" in r["tags"] for r in rows),
-    }
-    with get_db() as db:
-        cursor = db.execute(
-            """
-            INSERT INTO uploads
-            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, expiry_count, slow_count, fast_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                branch,
-                week_date,
-                filename,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                analysis_period_days,
-                len(rows),
-                counts["dead"],
-                counts["expiry"],
-                counts["slow"],
-                counts["fast"],
-            ),
-        )
-        upload_id = cursor.lastrowid
-        db.executemany(
-            """
-            INSERT INTO items
-            (upload_id, branch, week_date, name, sku, sold, stock, price, stock_value, turnover_ratio,
-             expiry, days_left, tags, urgency, action, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    upload_id,
-                    branch,
-                    week_date,
-                    row["name"],
-                    row["sku"],
-                    row["sold"],
-                    row["stock"],
-                    row["price"],
-                    row["stock_value"],
-                    row["turnover_ratio"],
-                    row["expiry"],
-                    row["days_left"],
-                    row["tags"],
-                    row["urgency"],
-                    row["action"],
-                    row["reason"],
-                )
-                for row in rows
-            ],
-        )
-    return int(upload_id)
 
 
 def parse_optional_float(value: str | None) -> float | None:
@@ -614,6 +423,9 @@ TAG_ACTIONS = {
     "overstock_risk": "Decision: stop reordering and push with offer/transfer.",
     "fast_moving": "Decision: protect availability and raise reorder point.",
     "slow_moving": "Decision: review shelf placement and promo.",
+    "expired": "Decision: remove expired units and claim from supplier where possible.",
+    "expiry_risk": "Decision: promote, transfer, or return before expiry.",
+    "negative_margin": "Decision: fix the selling price or recorded cost.",
 }
 
 
@@ -622,85 +434,125 @@ def action_for_tags(tags: str) -> str:
     return " ".join(actions)
 
 
-def import_pos_analysis_to_db(path: Path, replace_all: bool = False) -> int:
+def summary_branch(metadata: dict[str, Any], folder: Path) -> str:
+    """Smart imports keep the branch name exactly as entered; legacy POS folders use i-N names."""
+    if metadata.get("source") == "smart" and metadata.get("branch"):
+        return str(metadata["branch"])
+    return normalize_branch_name(metadata.get("branch") or folder.name.split("_")[0])
+
+
+ITEM_CSV_FIELDS = {
+    # db column: (csv column, parser)
+    "name": ("name", str),
+    "category": ("category", str),
+    "sku": ("ref", str),
+    "barcode": ("barcode", str),
+    "supplier": ("supplier", str),
+    "sold": ("pos_sales", parse_num),
+    "stock": ("qoh", parse_num),
+    "price": ("sales_price", parse_num),
+    "cost_price": ("cost", parse_num),
+    "stock_value": ("stock_value", parse_num),
+    "cost_value": ("cost_value", parse_num),
+    "turnover_ratio": ("turnover_ratio", parse_num),
+    "avg_daily_sales": ("avg_daily_sales", parse_num),
+    "days_cover_forecast": ("days_cover", parse_optional_float),
+    "stockout_probability_7d": ("stockout_probability_7d", parse_num),
+    "stockout_probability_14d": ("stockout_probability_14d", parse_num),
+    "stockout_probability_30d": ("stockout_probability_30d", parse_num),
+    "reorder_point": ("reorder_point", parse_num),
+    "recommended_reorder_qty": ("recommended_reorder_qty", parse_num),
+    "risk_score": ("risk_score", lambda value: parse_int(value, default=1)),
+    "decision_label": ("decision_label", str),
+    "lost_sales_value": ("lost_sales_value", parse_num),
+    "frozen_capital_value": ("frozen_capital_value", parse_num),
+    "unit_profit": ("unit_profit", parse_num),
+    "gross_margin_percent": ("gross_margin_percent", parse_num),
+    "break_even_price": ("break_even_price", parse_num),
+    "max_safe_discount_percent": ("max_safe_discount_percent", parse_num),
+    "suggested_offer_price": ("suggested_offer_price", parse_num),
+    "offer_discount_percent": ("offer_discount_percent", parse_num),
+    "offer_profit_per_unit": ("offer_profit_per_unit", parse_num),
+    "offer_profit_if_sold": ("offer_profit_if_sold", parse_num),
+    "signal_color": ("signal_color", str),
+    "net_sales": ("net_sales", parse_num),
+    "returns_qty": ("returns_qty", parse_num),
+    "cost_known": ("cost_known", lambda value: parse_int(value, default=0)),
+    "gross_profit": ("gross_profit", parse_num),
+    "lost_profit_value": ("lost_profit_value", parse_num),
+    "excess_qty": ("excess_qty", parse_num),
+    "excess_value": ("excess_value", parse_num),
+    "negative_margin_loss": ("negative_margin_loss", parse_num),
+    "expired_qty": ("expired_qty", parse_num),
+    "expiry_risk_qty": ("expiry_risk_qty", parse_num),
+    "expiry_risk_value": ("expiry_risk_value", parse_num),
+    "expiry": ("expiry", str),
+    "days_left": ("days_left", parse_optional_float),
+}
+
+
+def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_token: str = "") -> int:
     init_db()
     summary = load_analysis_summary(path)
     metadata = summary.get("metadata", {})
-    branch = normalize_branch_name(metadata.get("branch") or path.name.split("_")[0])
+    branch = summary_branch(metadata, path)
+    smart = metadata.get("source") == "smart"
     week_date = (metadata.get("end_date") or date.today().isoformat()).split(" ")[0]
-    source_file = f"{path.name}/merged_items.csv"
+    source_file = ", ".join(source["file"] for source in summary.get("sources", [])) or f"{path.name}/merged_items.csv"
 
     rows: list[dict[str, Any]] = []
     with (path / "merged_items.csv").open(encoding="utf-8-sig", newline="") as handle:
-        for row in csv.DictReader(handle):
-            tags = row.get("tags") or "normal"
-            row_branch = normalize_branch_name(row.get("branch") or branch)
-            if row_branch == "i-unknown":
-                row_branch = branch
-            rows.append(
+        for csv_row in csv.DictReader(handle):
+            row: dict[str, Any] = {}
+            for column, (csv_column, parser) in ITEM_CSV_FIELDS.items():
+                raw = csv_row.get(csv_column)
+                row[column] = parser(raw) if parser is not str else (raw or "")
+            row["category"] = row["category"] or "UNCATEGORIZED"
+            row["decision_label"] = row["decision_label"] or "Healthy"
+            row["signal_color"] = row["signal_color"] or "green"
+            row["days_left"] = int(row["days_left"]) if row["days_left"] is not None else None
+            if not smart:
+                row_branch = normalize_branch_name(csv_row.get("branch") or branch)
+                row["branch"] = branch if row_branch == "i-unknown" else row_branch
+            else:
+                row["branch"] = csv_row.get("branch") or branch
+            if not smart and row["net_sales"] == 0:
+                row["net_sales"] = row["sold"] * row["price"]
+            tags = csv_row.get("tags") or "normal"
+            row.update(
                 {
-                    "branch": row_branch,
                     "week_date": week_date,
-                    "name": row.get("name") or "",
-                    "category": row.get("category") or "UNCATEGORIZED",
-                    "sku": row.get("ref") or "",
-                    "sold": parse_num(row.get("pos_sales")),
-                    "stock": parse_num(row.get("qoh")),
-                    "price": parse_num(row.get("sales_price")),
-                    "cost_price": parse_num(row.get("cost")),
-                    "stock_value": parse_num(row.get("stock_value")),
-                    "cost_value": parse_num(row.get("cost_value")),
-                    "turnover_ratio": parse_num(row.get("turnover_ratio")),
-                    "avg_daily_sales": parse_num(row.get("avg_daily_sales")),
-                    "days_cover_forecast": parse_optional_float(row.get("days_cover")),
-                    "stockout_probability_7d": parse_num(row.get("stockout_probability_7d")),
-                    "stockout_probability_14d": parse_num(row.get("stockout_probability_14d")),
-                    "stockout_probability_30d": parse_num(row.get("stockout_probability_30d")),
-                    "reorder_point": parse_num(row.get("reorder_point")),
-                    "recommended_reorder_qty": parse_num(row.get("recommended_reorder_qty")),
-                    "risk_score": parse_int(row.get("risk_score"), default=1),
-                    "decision_label": row.get("decision_label") or "Healthy",
-                    "lost_sales_value": parse_num(row.get("lost_sales_value")),
-                    "frozen_capital_value": parse_num(row.get("frozen_capital_value")),
-                    "unit_profit": parse_num(row.get("unit_profit")),
-                    "gross_margin_percent": parse_num(row.get("gross_margin_percent")),
-                    "break_even_price": parse_num(row.get("break_even_price")),
-                    "max_safe_discount_percent": parse_num(row.get("max_safe_discount_percent")),
-                    "suggested_offer_price": parse_num(row.get("suggested_offer_price")),
-                    "offer_discount_percent": parse_num(row.get("offer_discount_percent")),
-                    "offer_profit_per_unit": parse_num(row.get("offer_profit_per_unit")),
-                    "offer_profit_if_sold": parse_num(row.get("offer_profit_if_sold")),
-                    "signal_color": row.get("signal_color") or "green",
-                    "expiry": "",
-                    "days_left": None,
                     "tags": tags,
-                    "urgency": "High" if any(tag in tags for tag in ["stockout_with_sales", "dead_stock"]) else "",
+                    "urgency": "High" if any(tag in tags for tag in ["stockout_with_sales", "dead_stock", "expired", "negative_margin"]) else "",
                     "action": action_for_tags(tags),
                     "reason": "",
                 }
             )
+            rows.append(row)
 
     counts = {
         "dead": sum("dead_stock" in row["tags"] for row in rows),
-        "stockout": sum("stockout_with_sales" in row["tags"] for row in rows),
-        "overstock": sum("overstock_risk" in row["tags"] for row in rows),
+        "alerts": sum(any(tag in row["tags"] for tag in ["stockout_with_sales", "overstock_risk", "expiry_risk", "expired", "negative_margin"]) for row in rows),
         "slow": sum("slow_moving" in row["tags"] for row in rows),
         "fast": sum("fast_moving" in row["tags"] for row in rows),
     }
+    branches = sorted({row["branch"] for row in rows}) or [branch]
 
     with get_db() as db:
         if replace_all:
             db.execute("DELETE FROM items")
             db.execute("DELETE FROM uploads")
         else:
-            db.execute("DELETE FROM items WHERE branch = ?", (branch,))
-            db.execute("DELETE FROM uploads WHERE branch = ?", (branch,))
+            for item_branch in branches:
+                db.execute("DELETE FROM items WHERE branch = ?", (item_branch,))
+                db.execute("DELETE FROM uploads WHERE branch = ?", (item_branch,))
 
         cursor = db.execute(
             """
             INSERT INTO uploads
-            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, expiry_count, slow_count, fast_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, expiry_count,
+             slow_count, fast_count, coverage, quality_score, import_token)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 branch,
@@ -710,67 +562,20 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False) -> int:
                 parse_int(metadata.get("period_days"), default=90),
                 len(rows),
                 counts["dead"],
-                counts["stockout"] + counts["overstock"],
+                counts["alerts"],
                 counts["slow"],
                 counts["fast"],
+                json.dumps(summary.get("coverage") or {}),
+                (summary.get("quality") or {}).get("score"),
+                import_token,
             ),
         )
         upload_id = cursor.lastrowid
+        columns = ["upload_id", "branch", "week_date", "tags", "urgency", "action", "reason", *ITEM_CSV_FIELDS]
+        placeholders = ", ".join("?" for _ in columns)
         db.executemany(
-            """
-            INSERT INTO items
-            (upload_id, branch, week_date, name, category, sku, sold, stock, price, cost_price, stock_value, cost_value, turnover_ratio,
-             expiry, days_left, tags, urgency, action, reason, avg_daily_sales, days_cover_forecast,
-             stockout_probability_7d, stockout_probability_14d, stockout_probability_30d, reorder_point,
-             recommended_reorder_qty, risk_score, decision_label, lost_sales_value, frozen_capital_value,
-             unit_profit, gross_margin_percent, break_even_price, max_safe_discount_percent,
-             suggested_offer_price, offer_discount_percent, offer_profit_per_unit, offer_profit_if_sold, signal_color)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    upload_id,
-                    row["branch"],
-                    row["week_date"],
-                    row["name"],
-                    row["category"],
-                    row["sku"],
-                    row["sold"],
-                    row["stock"],
-                    row["price"],
-                    row["cost_price"],
-                    row["stock_value"],
-                    row["cost_value"],
-                    row["turnover_ratio"],
-                    row["expiry"],
-                    row["days_left"],
-                    row["tags"],
-                    row["urgency"],
-                    row["action"],
-                    row["reason"],
-                    row["avg_daily_sales"],
-                    row["days_cover_forecast"],
-                    row["stockout_probability_7d"],
-                    row["stockout_probability_14d"],
-                    row["stockout_probability_30d"],
-                    row["reorder_point"],
-                    row["recommended_reorder_qty"],
-                    row["risk_score"],
-                    row["decision_label"],
-                    row["lost_sales_value"],
-                    row["frozen_capital_value"],
-                    row["unit_profit"],
-                    row["gross_margin_percent"],
-                    row["break_even_price"],
-                    row["max_safe_discount_percent"],
-                    row["suggested_offer_price"],
-                    row["offer_discount_percent"],
-                    row["offer_profit_per_unit"],
-                    row["offer_profit_if_sold"],
-                    row["signal_color"],
-                )
-                for row in rows
-            ],
+            f"INSERT INTO items ({', '.join(columns)}) VALUES ({placeholders})",
+            [tuple(upload_id if column == "upload_id" else row[column] for column in columns) for row in rows],
         )
     return len(rows)
 
@@ -842,11 +647,13 @@ def remove_branch_files(branch: str | None = None) -> int:
     removed = 0
     targets: list[Path] = []
     if branch:
-        targets.append(POS_RAW_DIR / branch)
+        targets.append(POS_RAW_DIR / branch_slug(branch))
         if POS_ANALYSIS_DIR.exists():
-            targets.extend(POS_ANALYSIS_DIR.glob(f"{branch}_*"))
+            for folder in POS_ANALYSIS_DIR.glob(f"{branch_slug(branch)}_*"):
+                if summary_branch(load_analysis_summary(folder).get("metadata", {}), folder) == branch:
+                    targets.append(folder)
     else:
-        targets.extend([POS_RAW_DIR, POS_ANALYSIS_DIR, UPLOAD_DIR])
+        targets.extend([POS_RAW_DIR, POS_ANALYSIS_DIR, UPLOAD_DIR, IMPORTS_DIR])
 
     for target in targets:
         try:
@@ -862,7 +669,7 @@ def remove_branch_files(branch: str | None = None) -> int:
             resolved.unlink()
             removed += 1
 
-    for directory in (UPLOAD_DIR, POS_RAW_DIR, POS_ANALYSIS_DIR):
+    for directory in (UPLOAD_DIR, POS_RAW_DIR, POS_ANALYSIS_DIR, IMPORTS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
     return removed
@@ -885,11 +692,17 @@ def delete_branch_data(branch: str | None = None, delete_files: bool = True) -> 
     return {"items": item_count, "uploads": upload_count, "files": file_count}
 
 
+def known_branches() -> list[str]:
+    with get_db() as db:
+        rows = db.execute("SELECT branch FROM items UNION SELECT branch FROM uploads ORDER BY branch").fetchall()
+    return [row["branch"] for row in rows]
+
+
 def selected_branch(value: str | None) -> str | None:
     if not value or value == "all":
         return None
-    branch = normalize_branch_name(value)
-    return branch if re.fullmatch(r"i-(?:[1-9]|10)", branch) else None
+    value = clean_branch_label(value)
+    return value if value in known_branches() else None
 
 
 def branch_query_args(branch: str | None) -> dict[str, str]:
@@ -904,10 +717,17 @@ def fetch_items(category: str = "all", limit: int | None = None, branch: str | N
         conditions.append("tags LIKE ?")
         params.append("%dead_stock%")
         order = "frozen_capital_value DESC, stock_value DESC"
-    elif category == "expiry":
+    elif category == "reorder":
         conditions.append("tags LIKE ?")
         params.append("%stockout_with_sales%")
         order = "risk_score DESC, lost_sales_value DESC, sold DESC"
+    elif category == "expiry":
+        conditions.append("(tags LIKE ? OR tags LIKE ? OR tags LIKE ?)")
+        params.extend(["%expired%", "%expiry_risk%", "%near_expiry%"])
+        order = "expiry_risk_value DESC, days_left ASC"
+    elif category == "loss":
+        conditions.append("negative_margin_loss > 0")
+        order = "negative_margin_loss DESC"
     elif category == "overstock":
         conditions.append("tags LIKE ?")
         params.append("%overstock_risk%")
@@ -947,7 +767,13 @@ def dashboard_stats(branch: str | None = None) -> dict[str, Any]:
             SELECT
                 COUNT(*) AS total_items,
                 SUM(CASE WHEN tags LIKE '%dead_stock%' THEN 1 ELSE 0 END) AS dead_count,
-                SUM(CASE WHEN tags LIKE '%stockout_with_sales%' THEN 1 ELSE 0 END) AS expiry_count,
+                SUM(CASE WHEN tags LIKE '%stockout_with_sales%' THEN 1 ELSE 0 END) AS reorder_count,
+                SUM(CASE WHEN tags LIKE '%expired%' OR tags LIKE '%expiry_risk%' THEN 1 ELSE 0 END) AS expiry_count,
+                SUM(expiry_risk_value) AS expiry_risk_value,
+                SUM(gross_profit) AS gross_profit,
+                SUM(net_sales) AS net_sales,
+                SUM(negative_margin_loss) AS negative_margin_loss,
+                SUM(lost_profit_value) AS lost_profit_value,
                 SUM(CASE WHEN tags LIKE '%slow_moving%' THEN 1 ELSE 0 END) AS slow_count,
                 SUM(CASE WHEN tags LIKE '%fast_moving%' THEN 1 ELSE 0 END) AS fast_count,
                 SUM(CASE WHEN tags LIKE '%overstock_risk%' THEN 1 ELSE 0 END) AS overstock_count,
@@ -983,84 +809,299 @@ def index() -> str:
         branch_options=branch_options(),
         branch_args=branch_query_args(branch),
         top_dead=fetch_items("dead", 5, branch),
-        top_expiry=fetch_items("expiry", 5, branch),
+        top_reorder=fetch_items("reorder", 5, branch),
+        profit_loss=profit_loss_for(branch),
         top_overstock=fetch_items("overstock", 5, branch),
         top_fast=fetch_items("fast", 5, branch),
         top_risk=fetch_items("risk", 5, branch),
     )
 
 
+TOKEN_PATTERN = re.compile(r"[0-9a-f]{16}")
+
+QUALITY_ISSUES = {
+    # key: (arabic, english, severity)
+    "bad_number": ("خلايا أرقام مش مفهومة واتسابت فاضية", "Number cells that could not be read (left empty)", "warn"),
+    "bad_date": ("تواريخ مش مفهومة واتسابت فاضية", "Dates that could not be read (left empty)", "warn"),
+    "negative_stock": ("أرصدة بالسالب (اتحسبت صفر)", "Negative stock balances (treated as zero)", "warn"),
+    "price_below_cost": ("أصناف سعر بيعها أقل من تكلفتها", "Items priced below cost", "danger"),
+    "zero_price": ("أصناف عليها مبيعات وسعرها صفر", "Items with sales but zero price", "warn"),
+    "missing_cost": ("أصناف ليها رصيد ومن غير تكلفة", "Items in stock without a cost", "warn"),
+    "duplicate_transaction": ("سطور فواتير متكررة اتشالت", "Duplicate invoice lines removed", "info"),
+    "duplicate_row": ("صفوف متكررة بالظبط اتشالت", "Exact duplicate rows removed", "info"),
+    "duplicate_item": ("صنف متكرر في نفس الملف (اتجمع)", "Item repeated in the same file (merged)", "info"),
+    "totals_row": ("صفوف إجمالي اتشالت", "Totals rows removed", "info"),
+    "repeated_header": ("عناوين متكررة في نص الملف اتشالت", "Repeated header rows removed", "info"),
+    "no_identity": ("صفوف من غير كود أو اسم اتشالت", "Rows without code or name removed", "info"),
+    "barcode_scientific": ("باركود مكتوب بصيغة علمية (اتجاهل)", "Barcodes in scientific notation (ignored)", "warn"),
+    "return_lines": ("سطور مرتجعات (اتخصمت من المبيعات)", "Return lines (subtracted from sales)", "info"),
+}
+
+TABLE_ROLES = {
+    "transactions": ("فواتير بيع", "Sales invoices"),
+    "sales": ("ملخص مبيعات", "Sales summary"),
+    "stock": ("رصيد", "Stock"),
+    "expiry": ("صلاحية", "Expiry"),
+    "cost": ("تكلفة", "Cost"),
+    "price": ("أسعار", "Prices"),
+}
+
+PERIOD_SOURCES = {
+    "transactions": ("من تواريخ الفواتير", "from invoice dates"),
+    "report_header": ("من عنوان التقرير", "from the report header"),
+    "column_header": ("من اسم العمود", "from the column name"),
+    "user": ("المدة اللي كتبتها", "the period you entered"),
+}
+
+
+def import_dir(token: str) -> Path | None:
+    return IMPORTS_DIR / token if TOKEN_PATTERN.fullmatch(token or "") else None
+
+
+def load_json(path: Path | None) -> dict[str, Any] | None:
+    if not path or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def save_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
 @app.route("/upload", methods=["GET", "POST"])
 @login_required
 def upload() -> str | Response:
     if request.method == "GET":
-        return render_template("upload.html", analysis_period_options=ALLOWED_ANALYSIS_PERIOD_DAYS)
+        return render_template("upload.html", branch_choices=known_branches(), extensions=sorted(SUPPORTED_EXTENSIONS))
 
-    branch = normalize_branch_name(request.form.get("branch", ""))
-    if not re.fullmatch(r"i-(?:[1-9]|10)", branch):
-        flash("Choose a branch from i-1 to i-10.", "error")
+    files = [file for file in request.files.getlist("files") if file and file.filename]
+    if not files:
+        flash("اختار ملف واحد على الأقل. / Choose at least one file.", "error")
+        return redirect(url_for("upload"))
+    if len(files) > MAX_UPLOAD_FILES:
+        flash(f"أقصى عدد {MAX_UPLOAD_FILES} ملفات في المرة. / Up to {MAX_UPLOAD_FILES} files at once.", "error")
         return redirect(url_for("upload"))
 
-    analysis_period_mode = str(request.form.get("analysis_period_mode", "")).strip()
-    analysis_period_days = (
-        parse_analysis_period_days(request.form.get("analysis_period_days_custom"))
-        if analysis_period_mode == "custom"
-        else parse_analysis_period_days(analysis_period_mode)
-    )
-    if analysis_period_days is None:
-        flash("Choose 30, 90, 120, or enter a custom positive number of days.", "error")
-        return redirect(url_for("upload"))
-
-    files = {key: request.files.get(key) for key in POS_UPLOAD_FILES}
-    missing = [label for key, label in POS_UPLOAD_FILES.items() if not files[key] or not files[key].filename]
-    if missing:
-        flash(f"Upload all required POS files: {', '.join(missing)}.", "error")
-        return redirect(url_for("upload"))
-
-    for file in files.values():
-        extension = Path(file.filename).suffix.lower()
-        if extension not in ALLOWED_EXTENSIONS:
-            flash("Supported files are .xlsx or .xlsm only.", "error")
+    token = secrets.token_hex(8)
+    folder = IMPORTS_DIR / token / "files"
+    folder.mkdir(parents=True)
+    profiles = load_profiles(MAPPING_PROFILES_PATH)
+    stored = []
+    for index, file in enumerate(files):
+        original = Path(file.filename).name
+        extension = Path(original).suffix.lower()
+        if extension not in SUPPORTED_EXTENSIONS:
+            shutil.rmtree(folder.parent, ignore_errors=True)
+            flash(f"نوع الملف {original} مش مدعوم. / {original}: unsupported file type.", "error")
             return redirect(url_for("upload"))
+        target = folder / f"{index:02d}{extension}"
+        file.save(target)
+        try:
+            specs = detect_file(target, display_name=original, profiles_store=profiles)
+        except Exception as exc:  # unreadable or corrupt file
+            shutil.rmtree(folder.parent, ignore_errors=True)
+            flash(f"مقدرتش أقرا {original}: {exc} / Could not read {original}.", "error")
+            return redirect(url_for("upload"))
+        stored.append({"stored": target.name, "original": original, "specs": [spec.to_dict() for spec in specs]})
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    raw_dir = POS_RAW_DIR / branch / stamp
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    saved_files: list[str] = []
-    for key, label in POS_UPLOAD_FILES.items():
-        file = files[key]
-        assert file is not None
-        extension = Path(file.filename).suffix.lower()
-        saved_name = f"{branch}-{label}{extension}"
-        file.save(raw_dir / saved_name)
-        saved_files.append(saved_name)
+    save_json(
+        IMPORTS_DIR / token / "draft.json",
+        {
+            "branch": clean_branch_label(request.form.get("branch", "")),
+            "period_days": parse_int(request.form.get("period_days"), 0) or None,
+            "files": stored,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    return redirect(url_for("upload_review", token=token))
+
+
+def draft_needs_period(draft: dict[str, Any]) -> bool:
+    """True when sales data exists but nothing in the files tells us the period it covers."""
+    has_sales = False
+    for file in draft["files"]:
+        for spec in file["specs"]:
+            if not spec.get("usable"):
+                continue
+            role = set(spec.get("role") or [])
+            if "transactions" in role:
+                return False
+            if "sales" in role:
+                has_sales = True
+                meta = spec.get("meta") or {}
+                if (meta.get("start_date") and meta.get("end_date")) or meta.get("period_days"):
+                    return False
+    return has_sales
+
+
+@app.route("/upload/review/<token>", methods=["GET", "POST"])
+@login_required
+def upload_review(token: str) -> str | Response:
+    folder = import_dir(token)
+    draft = load_json(folder / "draft.json" if folder else None)
+    if not folder or not draft:
+        flash("الرفع ده مش موجود. / This upload no longer exists.", "error")
+        return redirect(url_for("upload"))
+
+    if request.method == "GET":
+        return render_template(
+            "upload_review.html",
+            token=token,
+            draft=draft,
+            field_choices=field_choices(current_language()),
+            field_labels=FIELD_LABELS,
+            table_roles=TABLE_ROLES,
+            needs_period=draft_needs_period(draft),
+            branch_choices=known_branches(),
+            branch_hint=next((spec["meta"]["branch_hint"] for file in draft["files"] for spec in file["specs"] if spec.get("meta", {}).get("branch_hint")), ""),
+        )
+
+    draft["branch"] = clean_branch_label(request.form.get("branch", ""))
+    draft["period_days"] = parse_int(request.form.get("period_days"), 0) or None
+    tables: list[tuple[Path, TableSpec]] = []
+    for file_index, file in enumerate(draft["files"]):
+        for table_index, spec_data in enumerate(file["specs"]):
+            spec = TableSpec.from_dict(spec_data)
+            overrides = {}
+            for column in spec.columns:
+                chosen = request.form.get(f"map-{file_index}-{table_index}-{column.index}", column.field)
+                overrides[column.index] = chosen if chosen in FIELD_LABELS else ""
+            apply_user_mapping(spec, overrides)
+            file["specs"][table_index] = spec.to_dict()
+            if request.form.get(f"use-{file_index}-{table_index}") == "1" and spec.usable:
+                tables.append((folder / "files" / file["stored"], spec))
+    save_json(folder / "draft.json", draft)
+    if not tables:
+        flash("مفيش جدول صالح للتحليل. لازم يكون فيه عمود كود أو اسم صنف، وعمود كمية أو رصيد. / No usable table selected.", "error")
+        return redirect(url_for("upload_review", token=token))
 
     try:
-        analysis_dir = analyze_pos_exports(
-            raw_dir,
-            POS_ANALYSIS_DIR,
-            prefix=f"{branch}-",
-            branch_override=branch,
-            movement_period_days_override=analysis_period_days,
-        )
-        summary_path = analysis_dir / "summary.json"
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        metadata = summary.get("metadata", {})
-        actual_period_days = int(metadata.get("actual_export_period_days") or 0)
-        if actual_period_days != analysis_period_days:
-            raise ValueError(
-                f"Product Activity export covers {actual_period_days} days, but you selected {analysis_period_days} days."
-            )
-        imported_count = import_pos_analysis_to_db(analysis_dir, replace_all=False)
-    except Exception as exc:
-        flash(f"Could not analyze POS files: {exc}", "error")
-        return redirect(url_for("upload"))
+        result = run_smart_import(tables, POS_ANALYSIS_DIR, default_branch=draft["branch"], period_days_override=draft["period_days"])
+    except ValueError as exc:
+        if str(exc) == "period_required":
+            flash("الملفات فيها مبيعات بس مش واضح هي عن كام يوم. اكتب مدة المبيعات بالأيام. / Enter how many days the sales cover.", "error")
+        else:
+            flash(f"مقدرتش أحلل الملفات: {exc} / Could not analyze the files.", "error")
+        return redirect(url_for("upload_review", token=token))
 
-    flash(
-        f"Imported {imported_count} POS rows for {branch} using a {analysis_period_days}-day analysis window. Raw files archived in {raw_dir}.",
-        "success",
+    for _path, spec in tables:
+        save_profile(MAPPING_PROFILES_PATH, spec)
+    for branch_result in result.branches:
+        import_pos_analysis_to_db(branch_result.output_dir, import_token=token)
+
+    save_json(
+        folder / "result.json",
+        {
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "quality": result.quality,
+            "branches": [
+                {
+                    "branch": branch_result.branch,
+                    "folder": branch_result.output_dir.name,
+                    "item_count": branch_result.item_count,
+                    "period_days": branch_result.summary["metadata"]["period_days"],
+                    "period_source": branch_result.summary["metadata"]["period_source"],
+                    "period_warning": branch_result.summary["metadata"].get("period_warning", ""),
+                    "coverage": branch_result.summary["coverage"],
+                    "profit_loss": {
+                        key: branch_result.summary["profit_loss"][key]
+                        for key in ("gross_profit", "margin_pct", "revenue", "total_loss", "total_frozen", "headline_ar", "headline_en", "warnings")
+                    },
+                }
+                for branch_result in result.branches
+            ],
+            "tables": [{"file": spec.file_name, "sheet": spec.sheet, "role": spec.role} for _path, spec in tables],
+        },
     )
-    return redirect(url_for("index"))
+    return redirect(url_for("import_result", token=token))
+
+
+@app.route("/imports/<token>")
+@login_required
+def import_result(token: str) -> str | Response:
+    folder = import_dir(token)
+    result = load_json(folder / "result.json" if folder else None)
+    if not result:
+        return redirect(url_for("uploads"))
+    counters = result["quality"].get("counters", {})
+    issues = [
+        {"key": key, "count": counters[key], "text": QUALITY_ISSUES[key], "samples": result["quality"].get("samples", {}).get(key, [])}
+        for key in QUALITY_ISSUES
+        if counters.get(key)
+    ]
+    issues.sort(key=lambda issue: {"danger": 0, "warn": 1, "info": 2}[issue["text"][2]])
+    return render_template(
+        "import_result.html",
+        token=token,
+        result=result,
+        issues=issues,
+        table_roles=TABLE_ROLES,
+        period_sources=PERIOD_SOURCES,
+    )
+
+
+def db_row_to_item(row: sqlite3.Row) -> dict[str, Any]:
+    """Adapt a DB item row to the analysis schema used by insights.analyze_profit_loss."""
+    item = dict(row)
+    sold, price, cost = float(item["sold"] or 0), float(item["price"] or 0), float(item["cost_price"] or 0)
+    net_sales = float(item["net_sales"] or 0)  # legacy rows get sold * price at import time
+    cost_known = bool(item["cost_known"]) or cost > 0
+    gross_profit = float(item["gross_profit"] or 0)
+    if not gross_profit and cost_known and sold > 0:
+        gross_profit = net_sales - sold * cost
+    return {
+        **item,
+        "ref": item["sku"],
+        "pos_sales": sold,
+        "qoh": item["stock"],
+        "sales_price": price,
+        "cost": cost,
+        "cost_known": int(cost_known),
+        "net_sales": net_sales,
+        "gross_profit": gross_profit,
+        "days_cover": item["days_cover_forecast"],
+    }
+
+
+def profit_loss_for(branch: str | None = None) -> dict[str, Any]:
+    where = "WHERE branch = ?" if branch else ""
+    params = [branch] if branch else []
+    with get_db() as db:
+        rows = db.execute(f"SELECT * FROM items {where}", params).fetchall()
+        uploads_rows = db.execute(f"SELECT analysis_period_days, coverage FROM uploads {where}", params).fetchall()
+    items = [db_row_to_item(row) for row in rows]
+    coverage: dict[str, bool] = {}
+    for upload_row in uploads_rows:
+        try:
+            upload_coverage = json.loads(upload_row["coverage"]) if upload_row["coverage"] else {}
+        except json.JSONDecodeError:
+            upload_coverage = {}
+        if not upload_coverage:  # imported by the legacy 3-file pipeline
+            upload_coverage = {"sales": True, "stock": True, "price": True, "cost": any(item["cost_known"] for item in items)}
+        for key, value in upload_coverage.items():
+            coverage[key] = coverage.get(key, False) or bool(value)
+    periods = {int(upload_row["analysis_period_days"] or 0) for upload_row in uploads_rows}
+    period = periods.pop() if len(periods) == 1 else 0
+    result = analyze_profit_loss(items, period_days=period, coverage=coverage)
+    result["has_data"] = bool(items)
+    return result
+
+
+@app.route("/profit-loss")
+@login_required
+def profit_loss() -> str:
+    branch = selected_branch(request.args.get("branch"))
+    return render_template(
+        "profit_loss.html",
+        pl=profit_loss_for(branch),
+        selected_branch=branch,
+        branch_options=branch_options(),
+        branch_args=branch_query_args(branch),
+    )
 
 
 @app.route("/download-template")
@@ -1079,7 +1120,9 @@ def report(category: str) -> str:
     labels = {
         "all": "All Items",
         "dead": "Dead Stock",
-        "expiry": "Stockout With Sales",
+        "reorder": "Stockout With Sales",
+        "expiry": "Expiry Risk",
+        "loss": "Selling Below Cost",
         "overstock": "Overstock Risk",
         "slow": "Slow Moving",
         "fast": "Fast Moving",
@@ -1202,13 +1245,13 @@ def financial_history(branch: str | None = None) -> list[dict[str, Any]]:
     if not POS_ANALYSIS_DIR.exists():
         return rows
 
-    for summary_path in sorted(POS_ANALYSIS_DIR.glob("i-*_20*/summary.json"), key=lambda path: path.stat().st_mtime):
+    for summary_path in sorted(POS_ANALYSIS_DIR.glob("*_20*/summary.json"), key=lambda path: path.stat().st_mtime):
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         metadata = summary.get("metadata", {})
-        item_branch = normalize_branch_name(metadata.get("branch") or summary_path.parent.name.split("_")[0])
+        item_branch = summary_branch(metadata, summary_path.parent)
         if branch and item_branch != branch:
             continue
         timestamp = summary_path.parent.name.split("_", 1)[-1]
@@ -1282,13 +1325,13 @@ def weekly_summary_records(branch: str | None = None) -> list[dict[str, Any]]:
     if not POS_ANALYSIS_DIR.exists():
         return records
 
-    for summary_path in POS_ANALYSIS_DIR.glob("i-*_20*/summary.json"):
+    for summary_path in POS_ANALYSIS_DIR.glob("*_20*/summary.json"):
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         metadata = summary.get("metadata", {})
-        item_branch = normalize_branch_name(metadata.get("branch") or summary_path.parent.name.split("_")[0])
+        item_branch = summary_branch(metadata, summary_path.parent)
         if branch and item_branch != branch:
             continue
         records.append(
@@ -1345,17 +1388,18 @@ def product_history(sku: str) -> list[dict[str, Any]]:
     if not POS_ANALYSIS_DIR.exists():
         return rows
 
-    for csv_path in sorted(POS_ANALYSIS_DIR.glob("i-*_20*/merged_items.csv"), key=lambda path: path.stat().st_mtime):
+    for csv_path in sorted(POS_ANALYSIS_DIR.glob("*_20*/merged_items.csv"), key=lambda path: path.stat().st_mtime):
         summary = load_analysis_summary(csv_path.parent)
         metadata = summary.get("metadata", {})
-        folder_branch = normalize_branch_name(metadata.get("branch") or csv_path.parent.name.split("_")[0])
+        folder_branch = summary_branch(metadata, csv_path.parent)
+        smart = metadata.get("source") == "smart"
         label = metadata.get("end_date") or csv_path.parent.name.split("_", 1)[-1]
         try:
             with csv_path.open(encoding="utf-8-sig", newline="") as handle:
                 for row in csv.DictReader(handle):
                     if str(row.get("ref") or "").strip() != sku:
                         continue
-                    item_branch = normalize_branch_name(row.get("branch") or folder_branch)
+                    item_branch = (row.get("branch") or folder_branch) if smart else normalize_branch_name(row.get("branch") or folder_branch)
                     if item_branch == "i-unknown":
                         item_branch = folder_branch
                     rows.append(
@@ -1496,7 +1540,7 @@ def data_management() -> str | Response:
         if mode == "branch":
             branch = selected_branch(request.form.get("branch"))
             if not branch:
-                flash("Choose a valid branch from i-1 to i-10.", "error")
+                flash("Choose a branch that has data.", "error")
                 return redirect(url_for("data_management"))
             if confirm != branch:
                 flash(f"Type {branch} to confirm deleting this branch.", "error")
@@ -1522,7 +1566,7 @@ def data_management() -> str | Response:
         "data_management.html",
         summaries=summaries,
         totals=totals,
-        branch_choices=[f"i-{number}" for number in range(1, 11)],
+        branch_choices=known_branches(),
     )
 
 

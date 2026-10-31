@@ -11,7 +11,7 @@ ANALYSIS_DIR = BASE_DIR / "instance" / "pos_analysis"
 
 
 def latest_analysis_dir(root: Path = ANALYSIS_DIR) -> Path:
-    candidates = [path for path in root.glob("i-*_20*") if path.is_dir() and (path / "merged_items.csv").exists()]
+    candidates = [path for path in root.glob("*_20*") if path.is_dir() and (path / "merged_items.csv").exists()]
     if not candidates:
         raise FileNotFoundError(f"No analysis folders with merged_items.csv found under {root}")
     return max(candidates, key=lambda path: path.stat().st_mtime)

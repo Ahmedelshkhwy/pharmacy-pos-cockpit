@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
-{% set show_offer_columns = category in ["slow", "dead"] %}
+{% set show_offer_columns = category in ["slow", "dead", "loss"] %}
+{% set show_expiry_columns = category in ["expiry", "all"] %}
 <section class="page-head">
   <div>
     <p class="eyebrow">{% if lang == "ar" %}تقرير قرارات{% else %}Decision report{% endif %}</p>
@@ -40,6 +41,13 @@
         <th>Offer price</th>
         <th>Offer profit</th>
         {% endif %}
+        {% if show_expiry_columns %}
+        <th>{% if lang == "ar" %}الصلاحية{% else %}Expiry{% endif %}</th>
+        <th>{% if lang == "ar" %}أيام متبقية{% else %}Days left{% endif %}</th>
+        <th>{% if lang == "ar" %}كمية في خطر{% else %}Units at risk{% endif %}</th>
+        <th>{% if lang == "ar" %}قيمة في خطر{% else %}Value at risk{% endif %}</th>
+        {% endif %}
+        {% if category == "loss" %}<th>{% if lang == "ar" %}الخسارة{% else %}Loss{% endif %}</th>{% endif %}
         <th>Days cover</th>
         <th>7d out</th>
         <th>14d out</th>
@@ -71,6 +79,13 @@
           <small>Total: {{ "{:,.0f}".format(row.offer_profit_if_sold or 0) }}</small>
         </td>
         {% endif %}
+        {% if show_expiry_columns %}
+        <td>{{ row.expiry or "-" }}</td>
+        <td>{% if row.days_left is not none %}<span class="{{ 'text-up' if row.days_left <= 30 else '' }}">{{ row.days_left }}</span>{% else %}-{% endif %}</td>
+        <td>{{ "{:,.0f}".format(row.expiry_risk_qty or 0) }}</td>
+        <td>{{ "{:,.0f}".format(row.expiry_risk_value or 0) }}</td>
+        {% endif %}
+        {% if category == "loss" %}<td><strong class="text-up">{{ "{:,.0f}".format(row.negative_margin_loss or 0) }}</strong></td>{% endif %}
         <td>{% if row.days_cover_forecast is not none %}{{ row.days_cover_forecast|round(1) }}{% else %}-{% endif %}</td>
         <td>{{ "{:.0%}".format(row.stockout_probability_7d or 0) }}</td>
         <td>{{ "{:.0%}".format(row.stockout_probability_14d or 0) }}</td>
@@ -85,7 +100,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="{{ 21 if show_offer_columns else 15 }}" class="empty">{{ t("no_rows_report") }}</td></tr>
+      <tr><td colspan="25" class="empty">{{ t("no_rows_report") }}</td></tr>
       {% endfor %}
     </tbody>
   </table>
