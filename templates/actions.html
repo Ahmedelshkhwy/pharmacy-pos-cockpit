@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% macro money(value) -%}{{ "{:,.0f}".format(value or 0) }}{%- endmacro %}
+{% block content %}
+{% set ar = lang == "ar" %}
+{% set reasons = {"dead": ("راكد عنده", "dead stock there"), "expiry": ("صلاحيته قربت عنده", "expiring there"), "overstock": ("زيادة عنده", "surplus there")} %}
+{% set priorities = {"urgent": ("عاجل", "Urgent"), "soon": ("خلال أسبوعين", "Within 2 weeks"), "planned": ("عادي", "Planned")} %}
+{% set transfer_value = transfers|sum(attribute="value") %}
+{% set order_value = orders|sum(attribute="value") %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}من التحليل للتنفيذ{% else %}From analysis to action{% endif %}</p>
+    <h1>{{ t("actions") }}{% if selected_branch %} · {{ selected_branch }}{% endif %}</h1>
+    <p class="subtle">{% if ar %}التحويلات بين الفروع بتتحسب الأول، والشراء بيغطي بس اللي التحويلات مش هتغطيه.{% else %}Branch transfers are planned first; purchases only cover what transfers cannot.{% endif %}</p>
+  </div>
+  <div class="actions">
+    <form class="header-filter" method="get">
+      <label>
+        <span>{{ t("branch_filter") }}</span>
+        <select name="branch" onchange="this.form.submit()">
+          <option value="all">{{ t("all_branches") }}</option>
+          {% for branch in branch_options %}<option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>{% endfor %}
+        </select>
+      </label>
+    </form>
+    <a class="button whatsapp" href="{{ whatsapp }}" target="_blank" rel="noopener">{% if ar %}ابعت الملخص واتساب{% else %}Share on WhatsApp{% endif %}</a>
+  </div>
+</section>
+
+<section class="metrics executive-metrics">
+  <article class="metric-good"><span>{{ money(transfer_value) }}</span><p>{% if ar %}قيمة تحويلات بدل الشراء{% else %}Transfers instead of buying{% endif %} · {{ transfers|length }}</p></article>
+  <article><span>{{ money(order_value) }}</span><p>{% if ar %}مشتريات مقترحة{% else %}Suggested purchases{% endif %} · {{ orders|length }} {% if ar %}طلبية{% else %}orders{% endif %}</p></article>
+  <article class="metric-danger"><span>{{ orders|sum(attribute="urgent_count") }}</span><p>{% if ar %}أصناف شراؤها عاجل{% else %}Urgent items to buy{% endif %}</p></article>
+  <article class="metric-warn"><span>{{ expiring|length }}</span><p>{% if ar %}أصناف محتاجة عرض أو مرتجع{% else %}Items to promote or return{% endif %}</p></article>
+  <article class="metric-danger"><span>{{ fixes|length }}</span><p>{% if ar %}أسعار محتاجة مراجعة{% else %}Prices to fix{% endif %}</p></article>
+</section>
+
+<details class="panel digest">
+  <summary>{% if ar %}نص الملخص (تقدر تنسخه){% else %}Summary text (copyable){% endif %}</summary>
+  <pre>{{ digest }}</pre>
+</details>
+
+<section class="section-head"><div>
+  <p class="eyebrow">1</p>
+  <h2>{% if ar %}حوّل بين الفروع قبل ما تشتري{% else %}Transfer between branches before buying{% endif %}</h2>
+</div></section>
+<section class="panel">
+  {% if branch_count < 2 %}
+  <p class="helper-text">{% if ar %}التحويلات محتاجة بيانات فرعين على الأقل. ارفع ملفات باقي الفروع علشان الأداة تلاقي زيادة في فرع ونقص في فرع تاني.{% else %}Transfers need at least two branches. Upload the other branches so surplus in one can cover shortage in another.{% endif %}</p>
+  {% elif not transfers %}
+  <p class="helper-text">{% if ar %}مفيش تحويلات مفيدة دلوقتي: مفيش فرع عنده زيادة من صنف ناقص في فرع تاني.{% else %}No useful transfers right now: no branch has surplus of an item another branch is short of.{% endif %}</p>
+  {% else %}
+  <table>
+    <thead><tr>
+      <th>{{ t("item") }}</th><th>{% if ar %}من{% else %}From{% endif %}</th><th>{% if ar %}إلى{% else %}To{% endif %}</th>
+      <th>{% if ar %}الكمية{% else %}Qty{% endif %}</th><th>{% if ar %}القيمة{% else %}Value{% endif %}</th><th>{% if ar %}ليه{% else %}Why{% endif %}</th>
+    </tr></thead>
+    <tbody>
+      {% for transfer in transfers %}
+      {% if loop.index == 16 %}
+    </tbody>
+    <tbody class="more-rows" hidden>
+      {% endif %}
+      <tr>
+        <td><a class="item-link" href="{{ url_for('product_detail', sku=transfer.sku) }}">{{ transfer.item }}</a></td>
+        <td>{{ transfer.from_branch }}</td>
+        <td>{{ transfer.to_branch }}{% if transfer.receiver_urgent %} <span class="chip danger-chip">{% if ar %}ناقص عنده{% else %}out there{% endif %}</span>{% endif %}</td>
+        <td><strong>{{ transfer.qty }}</strong></td>
+        <td>{{ money(transfer.value) }}</td>
+        <td>{{ reasons[transfer.reason][0 if ar else 1] }}{% if transfer.days_left is not none %}<small>{% if ar %}فاضل {{ transfer.days_left }} يوم، والكمية على قد اللي هيتباع قبلها{% else %}{{ transfer.days_left }} days left; qty limited to what sells before then{% endif %}</small>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if transfers|length > 15 %}
+  <button class="button" type="button" onclick="this.previousElementSibling.querySelector('.more-rows').hidden = false; this.remove();">
+    {% if ar %}اعرض الباقي ({{ transfers|length - 15 }}){% else %}Show the rest ({{ transfers|length - 15 }}){% endif %}
+  </button>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="section-head"><div>
+  <p class="eyebrow">2</p>
+  <h2>{% if ar %}طلبيات الشراء حسب المورد{% else %}Purchase orders by supplier{% endif %}</h2>
+</div>
+{% if orders %}<a class="button primary" href="{{ url_for('purchase_orders_export', **branch_args) }}">{% if ar %}نزّل كل الطلبيات Excel{% else %}Download all as Excel{% endif %}</a>{% endif %}
+</section>
+<section class="driver-list">
+  {% for order in orders %}
+  <article class="driver-card {{ 'loss' if order.urgent_count else 'info' }}">
+    <header>
+      <div>
+        <h3>{{ order.supplier or ("بدون مورد" if ar else "No supplier") }}{% if not selected_branch %} · {{ order.branch }}{% endif %}</h3>
+        <p>{{ order.lines|length }} {% if ar %}صنف{% else %}items{% endif %}{% if order.urgent_count %} · {{ order.urgent_count }} {% if ar %}عاجل{% else %}urgent{% endif %}{% endif %}</p>
+      </div>
+      <div class="driver-amount">
+        <strong>{{ money(order.value) }}</strong>
+        <a class="see-all" href="{{ url_for('purchase_orders_export', branch=order.branch, supplier=order.supplier) }}">Excel ↓</a>
+      </div>
+    </header>
+    <details {% if order.urgent_count %}open{% endif %}>
+      <summary>{% if ar %}الأصناف{% else %}Items{% endif %}</summary>
+      <table class="compact-table fit-table">
+        <thead><tr><th>{{ t("item") }}</th><th>{{ t("stock") }}</th><th>{% if ar %}بيع/يوم{% else %}Units/day{% endif %}</th><th>{% if ar %}اطلب{% else %}Order{% endif %}</th><th>{% if ar %}القيمة{% else %}Value{% endif %}</th><th>{% if ar %}الأولوية{% else %}Priority{% endif %}</th></tr></thead>
+        <tbody>
+          {% for line in order.lines %}
+          <tr>
+            <td>{{ line.name }}{% if line.abc_class %} <span class="abc-badge abc-{{ line.abc_class }}">{{ line.abc_class }}</span>{% endif %}{% if line.covered_by_transfer %}<small>{% if ar %}{{ line.covered_by_transfer }} جايين بتحويل{% else %}{{ line.covered_by_transfer }} coming by transfer{% endif %}</small>{% endif %}</td>
+            <td>{{ line.stock|round(0)|int }}</td>
+            <td>{{ "{:.2f}".format(line.daily) }}</td>
+            <td><strong>{{ line.qty }}</strong></td>
+            <td>{{ money(line.value) }}</td>
+            <td><span class="priority {{ line.priority }}">{{ priorities[line.priority][0 if ar else 1] }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </article>
+  {% else %}
+  <p class="panel helper-text">{% if ar %}مفيش أصناف محتاجة شراء دلوقتي.{% else %}Nothing needs ordering right now.{% endif %}</p>
+  {% endfor %}
+</section>
+
+<section class="grid two">
+  <div class="panel">
+    <div class="panel-head"><h2>3. {% if ar %}الحق الصلاحية{% else %}Beat the expiry date{% endif %}</h2><a href="{{ url_for('report', category='expiry', **branch_args) }}">{{ t("view_all") }}</a></div>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{% if ar %}فاضل{% else %}Days left{% endif %}</th><th>{% if ar %}كمية في خطر{% else %}At risk{% endif %}</th><th>{% if ar %}القيمة{% else %}Value{% endif %}</th></tr></thead>
+      <tbody>
+        {% for row in expiring[:10] %}
+        <tr>
+          <td>{{ row.name }}</td>{% if not selected_branch %}<td>{{ row.branch }}</td>{% endif %}
+          <td>{% if row.days_left is not none and row.days_left <= 0 %}<span class="text-up">{% if ar %}منتهي{% else %}expired{% endif %}</span>{% else %}{{ row.days_left }}{% endif %}</td>
+          <td>{{ row.expiry_risk_qty|round(0)|int }}</td>
+          <td>{{ money(row.expiry_risk_value) }}</td>
+        </tr>
+        {% else %}<tr><td colspan="5" class="empty">{{ t("no_data") }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    <p class="helper-text">{% if ar %}المنتهي: شيله من الرف واطلب تعويض من المورد لو ينفع. اللي قرب: عرض أو مرتجع قبل ميعاد المرتجع.{% else %}Expired: remove from shelf and claim where possible. Expiring: promote or return before the return deadline.{% endif %}</p>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>4. {% if ar %}وقّف شراء دول{% else %}Stop buying these{% endif %}</h2><a href="{{ url_for('report', category='overstock', **branch_args) }}">{{ t("view_all") }}</a></div>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{{ t("stock") }}</th><th>{{ t("frozen_capital") }}</th></tr></thead>
+      <tbody>
+        {% for row in stop_list %}
+        <tr><td>{{ row.name }}</td>{% if not selected_branch %}<td>{{ row.branch }}</td>{% endif %}<td>{{ row.stock|round(0)|int }}</td><td>{{ money(row.frozen_capital_value) }}</td></tr>
+        {% else %}<tr><td colspan="4" class="empty">{{ t("no_data") }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% if fixes %}
+<section class="panel">
+  <div class="panel-head"><h2>5. {% if ar %}صحّح السعر قبل ما تشتري{% else %}Fix the price before buying{% endif %}</h2><a href="{{ url_for('report', category='loss', **branch_args) }}">{{ t("view_all") }}</a></div>
+  <p class="helper-text">{% if ar %}الأصناف دي مش داخلة في طلبيات الشراء، لأن كل وحدة بتتباع منها بخسارة.{% else %}These items are left out of purchase orders because each unit sells at a loss.{% endif %}</p>
+  <table class="compact-table fit-table">
+    <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{% if ar %}التكلفة{% else %}Cost{% endif %}</th><th>{% if ar %}سعر البيع{% else %}Price{% endif %}</th><th>{% if ar %}الخسارة{% else %}Loss{% endif %}</th></tr></thead>
+    <tbody>
+      {% for row in fixes[:10] %}
+      <tr><td>{{ row.name }}</td>{% if not selected_branch %}<td>{{ row.branch }}</td>{% endif %}<td>{{ "{:,.2f}".format(row.cost_price) }}</td><td>{{ "{:,.2f}".format(row.price) }}</td><td class="text-up">{{ money(row.negative_margin_loss) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

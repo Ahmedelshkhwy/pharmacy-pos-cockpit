@@ -73,7 +73,8 @@ def test_settings_validation_and_lead_time_precedence():
     settings = AnalysisSettings.from_dict(
         {
             "lead_time_days": "999",
-            "service_level_percent": "abc",
+            "service_level_a": "abc",
+            "service_level_percent": 97,  # saved before per-class levels existed
             "correct_stockouts": "0",
             "lead_time_overrides": [
                 {"kind": "category", "name": "Antibiotics", "days": 3},
@@ -84,7 +85,8 @@ def test_settings_validation_and_lead_time_precedence():
         }
     )
     assert settings.lead_time_days == 120  # clamped to the maximum
-    assert settings.service_level_percent == 95.0  # invalid -> default
+    assert settings.service_level_a == 98.0  # invalid -> default
+    assert settings.service_level_b == 97.0  # old single level carries over to B
     assert settings.correct_stockouts is False
     assert len(settings.lead_time_overrides) == 2
     assert settings.lead_time_for("pfizer", "Antibiotics") == 10  # supplier beats category, case-insensitive

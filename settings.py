@@ -15,7 +15,9 @@ from typing import Any
 class AnalysisSettings:
     lead_time_days: int = 7
     target_cover_days: int = 30
-    service_level_percent: float = 95.0
+    service_level_a: float = 98.0
+    service_level_b: float = 95.0
+    service_level_c: float = 90.0
     slow_moving_cover_days: int = 90
     overstock_cover_days: int = 180
     excess_cover_days: int = 90
@@ -28,9 +30,10 @@ class AnalysisSettings:
     # [{"kind": "supplier" | "category", "name": "...", "days": 3}]
     lead_time_overrides: list[dict[str, Any]] = field(default_factory=list)
 
-    @property
-    def safety_z(self) -> float:
-        return NormalDist().inv_cdf(self.service_level_percent / 100)
+    def safety_z(self, abc_class: str = "") -> float:
+        """Safety stock factor: A items get the highest availability, C items the lowest."""
+        level = {"A": self.service_level_a, "C": self.service_level_c}.get(abc_class, self.service_level_b)
+        return NormalDist().inv_cdf(level / 100)
 
     def lead_time_for(self, supplier: str, category: str) -> int:
         """Supplier override beats category override beats the default."""
@@ -46,6 +49,8 @@ class AnalysisSettings:
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "AnalysisSettings":
         settings = cls()
+        if data and "service_level_percent" in data and "service_level_b" not in data:
+            data = {**data, "service_level_b": data["service_level_percent"]}  # saved before per-class levels
         for spec in SETTING_FIELDS:
             if data and spec.key in data:
                 setattr(settings, spec.key, spec.coerce(data[spec.key]))
@@ -93,8 +98,12 @@ SETTING_FIELDS = [
                  "من وقت ما تطلب لحد ما البضاعة توصل الرف. بتحدد امتى لازم تطلب.", "From ordering until stock is on the shelf. Decides when to reorder.", 1, 120),
     SettingField("target_cover_days", "supply", "الطلبية تكفي كام يوم", "Order covers",
                  "كمية الطلب المقترحة تكفي المدة دي بعد وصولها.", "Suggested order quantity covers this many days after arrival.", 1, 365),
-    SettingField("service_level_percent", "supply", "نسبة توفر الصنف المطلوبة", "Target availability",
-                 "كل ما تزيد، مخزون الأمان يزيد والنواقص تقل. 95% مناسبة لأغلب الأصناف.", "Higher means more safety stock and fewer stockouts. 95% suits most items.", 50, 99.9, 0.5, "%", "%"),
+    SettingField("service_level_a", "supply", "نسبة التوفر لأصناف A", "Availability for A items",
+                 "أصناف A بتعمل 80% من الربح، فنقصها مكلف. نسبة أعلى معناها مخزون أمان أكبر.", "A items make 80% of profit, so running out is costly. Higher means more safety stock.", 50, 99.9, 0.5, "%", "%"),
+    SettingField("service_level_b", "supply", "نسبة التوفر لأصناف B", "Availability for B items",
+                 "الأصناف المتوسطة، والأصناف اللي مالهاش تصنيف.", "Mid items, and items without a class.", 50, 99.9, 0.5, "%", "%"),
+    SettingField("service_level_c", "supply", "نسبة التوفر لأصناف C", "Availability for C items",
+                 "أصناف C ربحها قليل. نسبة أقل بتقلل الفلوس المتجمدة فيها.", "C items earn little; a lower level frees cash tied up in them.", 50, 99.9, 0.5, "%", "%"),
     SettingField("slow_moving_cover_days", "movement", "بطيء لو الرصيد يغطي أكتر من", "Slow if stock covers more than",
                  "صنف بيتباع بس الرصيد بتاعه يكفي أكتر من المدة دي.", "Item sells but stock lasts longer than this.", 7, 3650),
     SettingField("overstock_cover_days", "movement", "زيادة مخزون لو يغطي أكتر من", "Overstock if stock covers more than",

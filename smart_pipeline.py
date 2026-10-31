@@ -18,7 +18,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from forecast import DayWeights, Forecast, forecast_item, to_day_index
+from forecast import DayWeights, Forecast, forecast_item, to_day_index, weekly_variability
 from insights import analyze_profit_loss
 from pos_pipeline import (
     classify_item,
@@ -30,6 +30,8 @@ from settings import AnalysisSettings
 from smart_import import Quality, TableSpec, iter_records, normalize_text
 
 DEFAULT_BRANCH = "Main"
+ABC_LIMITS = (0.80, 0.95)          # cumulative share of profit (or sales) for A and B
+XYZ_LIMITS = (0.5, 1.0)            # weekly coefficient of variation for X and Y
 
 STOCK_MEASURES = ("qoh", "batches", "stock_value", "stock_cost_value")
 SALES_MEASURES = ("qty_sold", "sales_value", "returns", "purchases")
@@ -43,6 +45,7 @@ ITEM_COLUMNS = [
     "lost_profit_value", "frozen_capital_value", "excess_qty", "excess_value", "negative_margin_loss",
     "expiry", "days_left", "expired_qty", "expiry_risk_qty", "expiry_risk_value",
     "base_daily_sales", "unavailable_days", "sales_trend", "trend_ratio", "lead_time_days",
+    "abc_class", "xyz_class", "demand_cv",
     "unit_profit", "gross_margin_percent", "break_even_price", "max_safe_discount_percent",
     "suggested_offer_price", "offer_discount_percent", "offer_profit_per_unit", "offer_profit_if_sold",
     "signal_color", "tags",
@@ -291,6 +294,7 @@ def finalize_item(
     today: date,
     settings: AnalysisSettings,
     weights: DayWeights | None = None,
+    abc_class: str = "",
 ) -> dict[str, Any]:
     sales = pick(item, specs, "sales", lambda p: p.has_sales)
     stock = pick(item, specs, "stock", lambda p: p.has_stock)
@@ -322,13 +326,12 @@ def finalize_item(
     # more weight on recent days. Summary files only give a total, so use the plain average.
     base_rate = pos_sales / period_days if period_days > 0 else 0.0
     forecast = Forecast(rate=base_rate, base_rate=base_rate, available_days=period_days, unavailable_days=0)
+    demand_cv = None
     if weights is not None and sales is not None and sales.daily:
-        forecast = forecast_item(
-            to_day_index(sales.daily, weights.start),
-            weights,
-            qoh=qoh_raw if coverage["stock"] else None,
-            correct_stockouts=settings.correct_stockouts,
-        )
+        daily = to_day_index(sales.daily, weights.start)
+        forecast = forecast_item(daily, weights, qoh=qoh_raw if coverage["stock"] else None, correct_stockouts=settings.correct_stockouts)
+        demand_cv = weekly_variability(daily, weights.days)
+    xyz_class = "" if demand_cv is None else "X" if demand_cv < XYZ_LIMITS[0] else "Y" if demand_cv < XYZ_LIMITS[1] else "Z"
     lead_time = settings.lead_time_for(item.supplier, item.category)
     metrics = predictive_metrics(
         pos_sales=pos_sales,
@@ -343,7 +346,7 @@ def finalize_item(
         lead_time_days=lead_time,
         target_cover_days=settings.target_cover_days,
         overstock_cover_days=settings.overstock_cover_days,
-        safety_z=settings.safety_z,
+        safety_z=settings.safety_z(abc_class),
     )
     avg_daily = float(metrics["avg_daily_sales"])
     if not coverage["stock"]:
@@ -442,11 +445,27 @@ def finalize_item(
         "sales_trend": forecast.trend,
         "trend_ratio": forecast.trend_ratio,
         "lead_time_days": lead_time,
+        "abc_class": abc_class,
+        "xyz_class": xyz_class,
+        "demand_cv": round(demand_cv, 3) if demand_cv is not None else "",
         "tags": " | ".join(tags) if tags else "normal",
     }
     row.update(metrics)
     row["days_cover"] = metrics["days_cover"]
     return row
+
+
+def abc_classes(items: list[dict[str, Any]], basis: str) -> list[str]:
+    """A = items making the first 80% of the total, B = the next 15%, C = the rest that sold."""
+    classes = ["" if item["pos_sales"] <= 0 else "C" for item in items]
+    ranked = sorted((index for index, item in enumerate(items) if item[basis] > 0), key=lambda index: -items[index][basis])
+    total = sum(items[index][basis] for index in ranked)
+    running = 0.0
+    for index in ranked:
+        share_before = running / total if total else 1.0
+        classes[index] = "A" if share_before < ABC_LIMITS[0] else "B" if share_before < ABC_LIMITS[1] else "C"
+        running += items[index][basis]
+    return classes
 
 
 @dataclass
@@ -552,7 +571,13 @@ def run_smart_import(
             raise ValueError("period_required")
         period = period_days or 30
         weights = DayWeights(branch.first_tx, period, settings.recency_half_life_days) if period_source == "transactions" else None
-        items = [finalize_item(item, branch_name, merger.specs, period, coverage, today, settings, weights) for item in branch.items]
+        first_pass = [finalize_item(item, branch_name, merger.specs, period, coverage, today, settings, weights) for item in branch.items]
+        classes = abc_classes(first_pass, "gross_profit" if coverage["cost"] else "net_sales")
+        # Second pass: safety stock depends on the class, and the class depends on every item's result.
+        items = [
+            finalize_item(item, branch_name, merger.specs, period, coverage, today, settings, weights, classes[index])
+            for index, item in enumerate(branch.items)
+        ]
         branch_quality = Quality()
         item_quality(items, coverage, branch_quality)
         overall_quality.merge(branch_quality)

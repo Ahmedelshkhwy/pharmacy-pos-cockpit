@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% macro money(value) -%}{{ "{:,.0f}".format(value or 0) }}{%- endmacro %}
+{% block content %}
+{% set ar = lang == "ar" %}
+{% set row_names = {"A": ("A: بيعملوا 80% من الربح", "A: make 80% of profit"), "B": ("B: الـ15% اللي بعدهم", "B: the next 15%"), "C": ("C: آخر 5%", "C: last 5%"), "-": ("من غير بيع", "No sales")} %}
+{% set col_names = {"X": ("X: طلب ثابت", "X: steady demand"), "Y": ("Y: متذبذب", "Y: variable"), "Z": ("Z: متقطع", "Z: erratic"), "-": ("مش معروف", "Unknown")} %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}ركّز فلوسك ووقتك فين{% else %}Where to focus money and attention{% endif %}</p>
+    <h1>{{ t("abc") }}{% if selected_branch %} · {{ selected_branch }}{% endif %}</h1>
+    <p class="subtle">{% if ar %}ABC حسب الربح (أو المبيعات لو مفيش تكلفة)، وXYZ حسب ثبات الطلب من أسبوع للتاني (محتاج ملف فواتير يوم بيوم).{% else %}ABC by profit (or sales without cost data); XYZ by week-to-week demand stability (needs invoice-level files).{% endif %}</p>
+  </div>
+  <form class="header-filter" method="get">
+    <label>
+      <span>{{ t("branch_filter") }}</span>
+      <select name="branch" onchange="this.form.submit()">
+        <option value="all">{{ t("all_branches") }}</option>
+        {% for branch in branch_options %}<option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>{% endfor %}
+      </select>
+    </label>
+  </form>
+</section>
+
+{% if not has_classes %}
+<section class="panel"><p class="helper-text">{% if ar %}التصنيف بيتعمل مع أي رفع جديد. ارفع الملفات تاني، أو اضغط "أعد التحليل" من الإعدادات.{% else %}Classes are computed on new uploads. Upload again, or use "Re-analyze" in settings.{% endif %}</p></section>
+{% else %}
+<section class="panel">
+  <table class="abc-matrix">
+    <thead><tr><th></th>{% for col in matrix.columns %}<th>{{ col_names[col][0 if ar else 1] }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for abc in matrix.rows %}
+      <tr>
+        <th><span class="abc-badge abc-{{ abc }}">{{ abc }}</span> {{ row_names[abc][0 if ar else 1] }}</th>
+        {% for col in matrix.columns %}
+        {% set cell = matrix.cells.get(abc ~ col) %}
+        <td class="abc-cell {{ 'empty-cell' if not cell }}">
+          {% if cell %}
+          <strong>{{ cell["items"]|int }}</strong> {% if ar %}صنف{% else %}items{% endif %}
+          <small>{{ "{:.0f}".format(cell.sales_share) }}% {% if ar %}من المبيعات{% else %}of sales{% endif %} · {% if ar %}مخزون{% else %}stock{% endif %} {{ money(cell.stock_value) }}</small>
+          {% else %}—{% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if not has_xyz %}
+<p class="helper-text">{% if ar %}ثبات الطلب (X/Y/Z) محتاج ملف فواتير يوم بيوم. الملفات اللي اترفعت فيها إجماليات بس.{% else %}Demand stability (X/Y/Z) needs an invoice-level file; the uploaded files only have totals.{% endif %}</p>
+{% endif %}
+<section class="grid two">
+  <div class="panel insight-card">
+    <h2>{% if ar %}إزاي تستخدمه{% else %}How to use it{% endif %}</h2>
+    {% if ar %}
+    <p><strong>A</strong>: دول اللي بيعملوا ربحك. نسبة التوفر ليهم {{ '%g' % settings.service_level_a }}%، يعني مخزون أمان أعلى. متخليهمش يخلصوا أبداً.</p>
+    <p><strong>C</strong>: ربحهم قليل. نسبة التوفر {{ '%g' % settings.service_level_c }}%، علشان فلوسك متتحبسش فيهم. لو كمان طلبهم متقطع (CZ)، فكّر تطلبهم عند الحاجة بس.</p>
+    <p><strong>X</strong> طلبهم ثابت فتوقعه دقيق. <strong>Z</strong> طلبهم متقطع فتوقعه أصعب، وتابعهم بنفسك.</p>
+    {% else %}
+    <p><strong>A</strong> items make your profit. Their availability target is {{ '%g' % settings.service_level_a }}% (more safety stock). Never let them run out.</p>
+    <p><strong>C</strong> items earn little. Target {{ '%g' % settings.service_level_c }}% so cash is not locked in them. If demand is also erratic (CZ), consider ordering on demand only.</p>
+    <p><strong>X</strong> items have steady demand, so forecasts are reliable. <strong>Z</strong> items are erratic; watch them yourself.</p>
+    {% endif %}
+    <a class="see-all" href="{{ url_for('analysis_settings') }}">{{ t("settings") }} →</a>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>{% if ar %}أصناف A في خطر نقص{% else %}A items at stockout risk{% endif %}</h2></div>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{{ t("stock") }}</th><th>{% if ar %}نقص خلال 14 يوم{% else %}Out in 14d{% endif %}</th></tr></thead>
+      <tbody>
+        {% for row in at_risk %}
+        <tr><td><a class="item-link" href="{{ url_for('product_detail', sku=row.sku, branch=row.branch) }}">{{ row.name }}</a></td>{% if not selected_branch %}<td>{{ row.branch }}</td>{% endif %}<td>{{ row.stock|round(0)|int }}</td><td>{{ "{:.0%}".format(row.stockout_probability_14d) }}</td></tr>
+        {% else %}<tr><td colspan="4" class="empty">{% if ar %}كل أصناف A متغطية.{% else %}All A items are covered.{% endif %}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><h2>{% if ar %}فلوس متجمدة في أصناف C أو من غير بيع{% else %}Cash frozen in C items or items without sales{% endif %}</h2></div>
+  <table class="compact-table fit-table">
+    <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{{ t("stock") }}</th><th>{{ t("frozen_capital") }}</th></tr></thead>
+    <tbody>
+      {% for row in frozen_c %}
+      <tr><td>{{ row.name }}{% if row.abc_class %} <span class="abc-badge abc-{{ row.abc_class }}">{{ row.abc_class }}</span>{% endif %}</td>{% if not selected_branch %}<td>{{ row.branch }}</td>{% endif %}<td>{{ row.stock|round(0)|int }}</td><td>{{ money(row.frozen_capital_value) }}</td></tr>
+      {% else %}<tr><td colspan="4" class="empty">{{ t("no_data") }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

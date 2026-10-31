@@ -16,6 +16,7 @@ from typing import Any
 from flask import Flask, Response, flash, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import actions as action_plans
 from insights import analyze_profit_loss
 from pos_pipeline import normalize_branch_name
 from settings import SETTING_FIELDS, SETTING_GROUPS, AnalysisSettings
@@ -90,6 +91,9 @@ ITEM_EXTRA_COLUMNS = {
     "sales_trend": "TEXT NOT NULL DEFAULT ''",
     "trend_ratio": "REAL NOT NULL DEFAULT 1",
     "lead_time_days": "INTEGER NOT NULL DEFAULT 7",
+    "abc_class": "TEXT NOT NULL DEFAULT ''",
+    "xyz_class": "TEXT NOT NULL DEFAULT ''",
+    "demand_cv": "REAL",
 }
 
 UPLOAD_EXTRA_COLUMNS = {
@@ -123,6 +127,8 @@ TRANSLATIONS = {
         "branch_upload": "Branch Upload",
         "smart_upload": "Upload files",
         "trends": "Trends over time",
+        "actions": "Action center",
+        "abc": "ABC analysis",
         "settings": "Analysis settings",
         "profit_loss": "Profit & Loss Drivers",
         "expiry_risk": "Expiry Risk",
@@ -193,6 +199,8 @@ TRANSLATIONS = {
         "branch_upload": "رفع ملفات فرع",
         "smart_upload": "ارفع ملفات",
         "trends": "التطور مع الوقت",
+        "actions": "مركز الأفعال",
+        "abc": "تحليل ABC",
         "settings": "إعدادات التحليل",
         "profit_loss": "سر المكسب والخسارة",
         "expiry_risk": "خطر الصلاحية",
@@ -558,6 +566,9 @@ ITEM_CSV_FIELDS = {
     "sales_trend": ("sales_trend", str),
     "trend_ratio": ("trend_ratio", lambda value: parse_num(value) or 1.0),
     "lead_time_days": ("lead_time_days", lambda value: parse_int(value, default=7)),
+    "abc_class": ("abc_class", str),
+    "xyz_class": ("xyz_class", str),
+    "demand_cv": ("demand_cv", parse_optional_float),
 }
 
 
@@ -1267,6 +1278,113 @@ def profit_loss_for(branch: str | None = None) -> dict[str, Any]:
     result = analyze_profit_loss(items, period_days=period, coverage=coverage, settings=load_analysis_settings())
     result["has_data"] = bool(items)
     return result
+
+
+def action_plan(branch: str | None = None) -> dict[str, Any]:
+    """Transfers are planned across all branches; the page then shows the selected branch's part."""
+    settings = load_analysis_settings()
+    with get_db() as db:
+        rows = [dict(row) for row in db.execute("SELECT * FROM items")]
+    transfers = action_plans.plan_transfers(rows, settings)
+    orders = action_plans.purchase_orders(rows, transfers)
+    branch_rows = [row for row in rows if not branch or row["branch"] == branch]
+    if branch:
+        transfers = [t for t in transfers if branch in (t.from_branch, t.to_branch)]
+        orders = [order for order in orders if order.branch == branch]
+    moved = {(t.from_branch, t.from_sku) for t in transfers if t.reason == "expiry"}
+    expiring = action_plans.expiry_actions(branch_rows, moved)
+    fixes = action_plans.price_fixes(branch_rows)
+    return {
+        "transfers": transfers,
+        "orders": orders,
+        "expiring": expiring,
+        "fixes": fixes,
+        "stop_list": action_plans.stop_buying(branch_rows),
+        "branch_count": len({row["branch"] for row in rows}),
+        "digest": action_plans.digest_text(branch, transfers, orders, expiring, fixes, current_language()),
+    }
+
+
+@app.route("/actions")
+@login_required
+def action_center() -> str:
+    branch = selected_branch(request.args.get("branch"))
+    plan = action_plan(branch)
+    return render_template(
+        "actions.html",
+        **plan,
+        whatsapp=action_plans.whatsapp_link(plan["digest"]),
+        selected_branch=branch,
+        branch_options=branch_options(),
+        branch_args=branch_query_args(branch),
+    )
+
+
+@app.route("/purchase-orders.xlsx")
+@login_required
+def purchase_orders_export() -> Response:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    branch = selected_branch(request.args.get("branch"))
+    supplier = request.args.get("supplier")
+    orders = [order for order in action_plan(branch)["orders"] if supplier is None or order.supplier == supplier]
+    ar = current_language() == "ar"
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    headers = (["الكود", "الباركود", "الصنف", "الرصيد", "بيع/يوم", "الكمية المطلوبة", "تكلفة الوحدة", "الإجمالي", "الأولوية", "متغطي بتحويل", "ABC"] if ar
+               else ["Code", "Barcode", "Item", "Stock", "Units/day", "Order qty", "Unit cost", "Total", "Priority", "Covered by transfer", "ABC"])
+    priority_names = {"urgent": "عاجل", "soon": "خلال أسبوعين", "planned": "عادي"} if ar else {"urgent": "Urgent", "soon": "Within 2 weeks", "planned": "Planned"}
+    used_titles: set[str] = set()
+    for order in orders:
+        title = re.sub(r"[\\/*?:\[\]]", " ", f"{order.branch} - {order.supplier or ('بدون مورد' if ar else 'No supplier')}")[:28].strip() or "Order"
+        while title in used_titles:
+            title = title[:26] + str(len(used_titles))
+        used_titles.add(title)
+        sheet = workbook.create_sheet(title)
+        sheet.sheet_view.rightToLeft = ar
+        sheet.append(headers)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        for line in order.lines:
+            sheet.append([line.sku, line.barcode, line.name, line.stock, round(line.daily, 2), line.qty, round(line.unit_cost, 2),
+                          round(line.value, 2), priority_names[line.priority], line.covered_by_transfer, line.abc_class])
+        sheet.append([])
+        sheet.append(["", "", "الإجمالي" if ar else "Total", "", "", sum(line.qty for line in order.lines), "", round(order.value, 2)])
+        sheet.column_dimensions["C"].width = 34
+    if not orders:
+        workbook.create_sheet("Empty").append(["لا توجد أصناف مطلوبة" if ar else "Nothing to order"])
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    name = f"purchase_orders_{branch_slug(branch) if branch else 'all'}_{date.today().isoformat()}.xlsx"
+    return send_file(output, as_attachment=True, download_name=name, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/abc")
+@login_required
+def abc_analysis() -> str:
+    branch = selected_branch(request.args.get("branch"))
+    where = "WHERE branch = ?" if branch else ""
+    with get_db() as db:
+        rows = [dict(row) for row in db.execute(f"SELECT * FROM items {where}", [branch] if branch else [])]
+    at_risk = sorted(
+        (row for row in rows if row["abc_class"] == "A" and ("stockout_with_sales" in row["tags"] or row["stockout_probability_14d"] >= 0.5)),
+        key=lambda row: -row["stockout_probability_14d"],
+    )[:15]
+    frozen_c = sorted((row for row in rows if row["abc_class"] in ("C", "") and row["frozen_capital_value"] > 0), key=lambda row: -row["frozen_capital_value"])[:15]
+    return render_template(
+        "abc.html",
+        matrix=action_plans.abc_matrix(rows),
+        at_risk=at_risk,
+        frozen_c=frozen_c,
+        has_classes=any(row["abc_class"] for row in rows),
+        has_xyz=any(row["xyz_class"] for row in rows),
+        settings=load_analysis_settings(),
+        selected_branch=branch,
+        branch_options=branch_options(),
+        branch_args=branch_query_args(branch),
+    )
 
 
 @app.route("/profit-loss")

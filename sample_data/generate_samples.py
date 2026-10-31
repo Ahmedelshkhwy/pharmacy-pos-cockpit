@@ -119,6 +119,15 @@ DEMAND_CLASSES = [
 ARABIC_DIGITS = str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩")
 
 
+SUPPLIER_BY_CATEGORY = {
+    "Analgesics": "GSK Distribution", "Antibiotics": "GSK Distribution", "Allergy": "GSK Distribution",
+    "Cardiovascular": "Pharma Overseas", "Diabetes": "Pharma Overseas", "Hormones": "Pharma Overseas", "Urology": "Pharma Overseas",
+    "Gastro": "Ibnsina Pharma", "Respiratory": "Ibnsina Pharma", "OTC": "Ibnsina Pharma", "Ophthalmic": "Ibnsina Pharma",
+    "Vitamins": "United Company", "Dermatology": "United Company", "Personal Care": "United Company",
+    "Cosmetics": "Beauty Hub", "Baby Care": "Mother & Baby Co", "Devices": "MedTech Supplies",
+}
+
+
 @dataclass
 class Item:
     code: str
@@ -134,6 +143,10 @@ class Item:
     batches: list[tuple[date, int]] = field(default_factory=list)
     daily_sales: list[int] = field(default_factory=list)  # units per day of the period
     unavailable_days: int = 0                              # days it could not be sold (stockout)
+
+    @property
+    def supplier(self) -> str:
+        return SUPPLIER_BY_CATEGORY[self.category]
 
     @property
     def stock(self) -> int:
@@ -241,7 +254,7 @@ def write_arabic_excel(path: Path, seed: int = 11, period_end: date = PERIOD_END
     ws.append(["صيدلية النور - فرع المعادي"])
     ws.append([f"تقرير حركة الأصناف من {period_start:%d/%m/%Y} إلى {period_end:%d/%m/%Y}"])
     ws.append([])
-    header = ["م", "كود الصنف", "اسم الصنف", "المجموعة", "الكمية المباعة", "قيمة المبيعات", "الرصيد الحالي", "سعر الشراء", "سعر البيع", "تاريخ الصلاحية"]
+    header = ["م", "كود الصنف", "اسم الصنف", "المجموعة", "الكمية المباعة", "قيمة المبيعات", "الرصيد الحالي", "سعر الشراء", "سعر البيع", "تاريخ الصلاحية", "الشركة"]
     ws.append(header)
     for index, item in enumerate(items, start=1):
         expiry = min((exp for exp, qty in item.batches if qty > 0), default=None)
@@ -259,7 +272,7 @@ def write_arabic_excel(path: Path, seed: int = 11, period_end: date = PERIOD_END
             value = f"{item.sales_value:,.2f} ج.م"
         if index % 9 == 0:
             price = f"{item.price} جنيه"
-        ws.append([index, item.code, f"  {item.name} ", item.category, sold, value, item.stock, item.cost, price, expiry_cell])
+        ws.append([index, item.code, f"  {item.name} ", item.category, sold, value, item.stock, item.cost, price, expiry_cell, item.supplier])
         if index == 40:
             ws.append([])
             ws.append(header)  # page-break header repeated mid-file
@@ -296,10 +309,10 @@ def write_transactions_and_batches(sales_path: Path, stock_path: Path) -> None:
                 writer.writerow([day.strftime("%d/%m/%Y"), f"R{invoice}", item.barcode, item.name, -1, f"{item.price:.2f}", f"{-item.price:.2f}"])
     with stock_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["Barcode", "Product", "Batch No", "Expiry Date", "Qty On Hand", "Unit Cost", "Retail Price"])
+        writer.writerow(["Barcode", "Product", "Batch No", "Expiry Date", "Qty On Hand", "Unit Cost", "Retail Price", "Supplier"])
         for item in items:
             for batch_index, (expiry, qty) in enumerate(item.batches, start=1):
-                writer.writerow([item.barcode, item.name.upper(), f"LOT{batch_index:02d}", expiry.isoformat(), qty, f"{item.cost:.2f}", f"{item.price:.2f}"])
+                writer.writerow([item.barcode, item.name.upper(), f"LOT{batch_index:02d}", expiry.isoformat(), qty, f"{item.cost:.2f}", f"{item.price:.2f}", item.supplier])
 
 
 def write_legacy_pos(folder: Path, branch: str = "i-3") -> None:
@@ -347,11 +360,11 @@ def write_multi_branch(path: Path) -> None:
     summary.append(["Generated", TODAY.isoformat()])
     summary.append(["Branches", 3])
     data = wb.create_sheet("Data")
-    data.append(["SKU", "Item Description", "Store", "Units Sold (90d)", "On Hand", "Avg Cost", "Selling Price", "Exp."])
+    data.append(["SKU", "Item Description", "Store", "Units Sold (90d)", "On Hand", "Avg Cost", "Selling Price", "Exp.", "Supplier"])
     for seed, store in [(41, "Downtown"), (42, "Nasr City"), (43, "Zayed")]:
         for item in build_branch(seed, "C"):
             expiry = min((exp for exp, qty in item.batches if qty > 0), default=None)
-            data.append([item.code, item.name, store, item.sold_qty, item.stock, item.cost, item.price, expiry])
+            data.append([item.code, item.name, store, item.sold_qty, item.stock, item.cost, item.price, expiry, item.supplier])
     wb.save(path)
 
 
