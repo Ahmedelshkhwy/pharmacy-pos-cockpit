@@ -124,3 +124,19 @@ def test_admin_password_reset_from_env(appmod, monkeypatch):
     with appmod.get_db() as db:
         row = db.execute("SELECT role, must_change_password FROM users WHERE username = 'admin'").fetchone()
     assert (row[0], row[1]) == ("owner", 1)
+
+
+def test_admin_password_from_render_env_replaces_the_default(appmod, monkeypatch):
+    """The admin was created with admin123 before PHARMACY_ADMIN_PASSWORD was set on the server."""
+    appmod.app.config["ENFORCE_PASSWORD_CHANGE"] = True
+    monkeypatch.setattr(appmod, "DEFAULT_ADMIN_PASSWORD", "Env-Pass-1")
+    appmod.init_db()
+    assert login(appmod.app.test_client(), "admin", "admin123").headers["Location"].endswith("/login")
+    client = appmod.app.test_client()
+    assert login(client, "admin", "Env-Pass-1").headers["Location"] == "/"  # straight in, no forced change
+    assert client.get("/users").status_code == 200  # full owner access
+
+    # A password changed later inside the app wins over the env value.
+    client.post("/change-password", data={"current_password": "Env-Pass-1", "new_password": "Changed-123", "confirm_password": "Changed-123"})
+    appmod.init_db()
+    assert login(appmod.app.test_client(), "admin", "Changed-123").headers["Location"] == "/"

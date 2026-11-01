@@ -447,6 +447,8 @@ def init_db() -> None:
                 db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
         if RESET_ADMIN_PASSWORD:
             reset_admin_password(db, RESET_ADMIN_PASSWORD)
+        elif DEFAULT_ADMIN_PASSWORD != KNOWN_DEFAULT_PASSWORD:
+            apply_configured_admin_password(db)
         user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             db.execute(
@@ -455,7 +457,7 @@ def init_db() -> None:
                     DEFAULT_ADMIN_USERNAME,
                     generate_password_hash(DEFAULT_ADMIN_PASSWORD),
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    1,  # the first password is either the published default or one set in the server env
+                    int(DEFAULT_ADMIN_PASSWORD == KNOWN_DEFAULT_PASSWORD),  # a password set in the server env is the owner's choice
                 ),
             )
 
@@ -472,6 +474,18 @@ def reset_admin_password(db: database.Connection, password: str) -> None:
         db.execute(
             "INSERT INTO users (username, password_hash, created_at, role, branches, must_change_password) VALUES (?, ?, ?, 'owner', '[]', 1)",
             (DEFAULT_ADMIN_USERNAME, password_hash, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+
+
+def apply_configured_admin_password(db: database.Connection) -> None:
+    """PHARMACY_ADMIN_PASSWORD used to count only when the first account was created, so an admin made
+    before it was set kept the published default. Move such an account to the configured password.
+    A password the owner already changed inside the app is never touched."""
+    admin = db.execute("SELECT * FROM users WHERE username = ?", (DEFAULT_ADMIN_USERNAME,)).fetchone()
+    if admin and check_password_hash(admin["password_hash"], KNOWN_DEFAULT_PASSWORD):
+        db.execute(
+            "UPDATE users SET password_hash = ?, role = 'owner', must_change_password = 0 WHERE id = ?",
+            (generate_password_hash(DEFAULT_ADMIN_PASSWORD), admin["id"]),
         )
 
 
