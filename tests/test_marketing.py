@@ -112,3 +112,15 @@ def test_demo_data_and_one_click_demo(appmod, monkeypatch, tmp_path):
     assert "فلوس بتضيع أو متجمدة" in report and "أهم 10 أصناف" in report
     actions = client.get("/actions").data.decode()
     assert "اتعمل بمنصة الصيدليات" in actions  # shared summaries carry the signature
+
+
+def test_admin_password_reset_from_env(appmod, monkeypatch):
+    with appmod.get_db() as db:
+        db.execute("UPDATE users SET password_hash = 'x', role = 'viewer'")
+    monkeypatch.setattr(appmod, "RESET_ADMIN_PASSWORD", "Rescue-2026")
+    appmod.init_db()
+    client = appmod.app.test_client()
+    assert login(client, "admin", "Rescue-2026").headers["Location"] == "/"
+    with appmod.get_db() as db:
+        row = db.execute("SELECT role, must_change_password FROM users WHERE username = 'admin'").fetchone()
+    assert (row[0], row[1]) == ("owner", 1)

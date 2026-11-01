@@ -52,6 +52,8 @@ MAX_UPLOAD_FILES = 10
 DEFAULT_ADMIN_USERNAME = os.environ.get("PHARMACY_ADMIN_USERNAME", "admin")
 KNOWN_DEFAULT_PASSWORD = "admin123"  # published in the README: whoever still uses it must change it
 DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", KNOWN_DEFAULT_PASSWORD)
+# Emergency access: when set, the admin account gets this password (and owner role) on startup.
+RESET_ADMIN_PASSWORD = os.environ.get("PHARMACY_RESET_ADMIN_PASSWORD", "")
 
 # Marketing / public site. All optional: the landing page works without them.
 WHATSAPP_NUMBER = re.sub(r"\D", "", os.environ.get("PHARMACY_WHATSAPP_NUMBER", ""))  # international, e.g. 201001234567
@@ -443,6 +445,8 @@ def init_db() -> None:
         for column, definition in UPLOAD_EXTRA_COLUMNS.items():
             if column not in existing_upload_columns:
                 db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
+        if RESET_ADMIN_PASSWORD:
+            reset_admin_password(db, RESET_ADMIN_PASSWORD)
         user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             db.execute(
@@ -454,6 +458,21 @@ def init_db() -> None:
                     1,  # the first password is either the published default or one set in the server env
                 ),
             )
+
+
+def reset_admin_password(db: database.Connection, password: str) -> None:
+    """Give the admin account a known password (creating it if needed); it must be changed at next login."""
+    password_hash = generate_password_hash(password)
+    if db.execute("SELECT 1 FROM users WHERE username = ?", (DEFAULT_ADMIN_USERNAME,)).fetchone():
+        db.execute(
+            "UPDATE users SET password_hash = ?, role = 'owner', must_change_password = 1 WHERE username = ?",
+            (password_hash, DEFAULT_ADMIN_USERNAME),
+        )
+    else:
+        db.execute(
+            "INSERT INTO users (username, password_hash, created_at, role, branches, must_change_password) VALUES (?, ?, ?, 'owner', '[]', 1)",
+            (DEFAULT_ADMIN_USERNAME, password_hash, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
 
 
 def business_type() -> str:
