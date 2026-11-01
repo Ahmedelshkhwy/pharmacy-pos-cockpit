@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>منصة الصيدليات | اعرف فلوسك بتضيع فين</title>
+  <meta name="description" content="ارفع ملفات سيستم الصيدلية زي ما هي، وفي دقايق تعرف الفلوس اللي بتضيع في الصلاحية والراكد والبيع تحت التكلفة والنواقص، وتعمل إيه النهارده. تحليل مجاني في 24 ساعة.">
+  <meta property="og:title" content="منصة الصيدليات: اعرف فلوسك بتضيع فين">
+  <meta property="og:description" content="تحليل مجاني لمخزون صيدليتك في 24 ساعة. من غير ما تغير السيستم بتاعك.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="{{ url_for('static', filename='landing.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="logo" href="{{ url_for('index') }}">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M21 8h6v8h8v6h-8v8h-6v-8h-8v-6h8z"/></svg>
+        <span>منصة الصيدليات</span>
+      </a>
+      <nav class="topnav" aria-label="روابط الصفحة">
+        <a href="#how">إزاي بتشتغل</a>
+        <a href="#features">المميزات</a>
+        <a href="#faq">أسئلة</a>
+        <a class="login-link" href="{{ url_for('login') }}">دخول العملاء</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <p class="kicker">لأصحاب الصيدليات والسلاسل</p>
+          <h1>اعرف فلوس صيدليتك<br>بتضيع فين بالظبط</h1>
+          <p class="lead">ارفع ملفات السيستم بتاعك زي ما هي. في دقايق هتعرف الفلوس اللي بتضيع في <strong>الصلاحية</strong> و<strong>الراكد</strong> و<strong>البيع تحت التكلفة</strong> و<strong>النواقص</strong>، بالجنيه وباسم كل صنف، ومعاها تعمل إيه النهارده.</p>
+          <div class="cta-row">
+            <a class="btn primary" href="#free-analysis">اطلب تحليلك المجاني</a>
+            {% if demo_mode %}<a class="btn ghost" href="{{ url_for('demo_login') }}">جرّب النسخة التجريبية</a>{% endif %}
+            {% if whatsapp_url %}<a class="btn whatsapp" href="{{ whatsapp_url }}" target="_blank" rel="noopener">كلمنا واتساب</a>{% endif %}
+          </div>
+          <ul class="trust">
+            <li>من غير ما تغير السيستم</li>
+            <li>من غير تركيب</li>
+            <li>التقرير خلال 24 ساعة</li>
+          </ul>
+        </div>
+
+        <figure class="report-card" aria-label="مثال لتقرير التحليل">
+          <figcaption>
+            <span>تقرير سر المكسب والخسارة</span>
+            <small>مثال من بيانات تجريبية</small>
+          </figcaption>
+          <div class="headline-number">
+            <span>فلوس بتضيع أو متجمدة</span>
+            <strong>412,800 ج</strong>
+          </div>
+          <ul class="leaks">
+            <li><span class="dot danger"></span>صلاحية هتنتهي قبل ما تتباع<b>96,400 ج</b></li>
+            <li><span class="dot danger"></span>بيع بأقل من التكلفة<b>18,250 ج</b></li>
+            <li><span class="dot warn"></span>نواقص ومبيعات ضايعة<b>41,900 ج</b></li>
+            <li><span class="dot frozen"></span>راكد وزيادة مخزون<b>256,250 ج</b></li>
+          </ul>
+          <div class="card-action">
+            <span>🔁</span>
+            <p>حوّل <b>Augmentin 1g</b> من فرع زايد لفرع المعادي بدل ما تشتري. توفير <b>7,080 ج</b></p>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <section class="pains">
+      <div class="wrap">
+        <h2>المشكلة مش في المبيعات، المشكلة في الفلوس اللي مش باينة</h2>
+        <div class="pain-grid">
+          <article>
+            <h3>⏳ الصلاحية</h3>
+            <p>أصناف هتنتهي على الرف قبل ما تتباع، ومحدش بياخد باله غير متأخر.</p>
+          </article>
+          <article>
+            <h3>🧊 الراكد</h3>
+            <p>فلوس متجمدة في أصناف متباعتش من شهور، وكان ممكن تتحول لأصناف بتتباع.</p>
+          </article>
+          <article>
+            <h3>📉 بيع تحت التكلفة</h3>
+            <p>سعر اتسجل غلط أو التكلفة زادت، وكل علبة بتتباع بخسارة.</p>
+          </article>
+          <article>
+            <h3>🚫 النواقص</h3>
+            <p>الصنف اللي بيتطلب كل يوم مش موجود، والعميل بيروح لصيدلية تانية.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="how" id="how">
+      <div class="wrap">
+        <h2>3 خطوات بس</h2>
+        <ol class="steps">
+          <li>
+            <span class="step-num">1</span>
+            <h3>طلّع 3 ملفات من السيستم</h3>
+            <p>حركة الأصناف، والرصيد، وتكلفة الرصيد. Excel أو CSV، عربي أو إنجليزي، بأي شكل.</p>
+          </li>
+          <li>
+            <span class="step-num">2</span>
+            <h3>ارفعها أو ابعتها لنا</h3>
+            <p>المنصة بتفهم الأعمدة لوحدها، وبتنضف البيانات، وبتربط الملفات ببعض.</p>
+          </li>
+          <li>
+            <span class="step-num">3</span>
+            <h3>خد قايمة شغل جاهزة</h3>
+            <p>اشتري إيه، وحوّل إيه بين الفروع، ووقّف شراء إيه، وصحّح سعر إيه. والملخص يوصلك واتساب.</p>
+          </li>
+        </ol>
+        <p class="systems">بتشتغل مع ملفات أي سيستم: Julip، Ascon، Saap، أو حتى Excel عادي.</p>
+      </div>
+    </section>
+
+    <section class="features" id="features">
+      <div class="wrap">
+        <h2>كل اللي تحتاجه علشان تاخد قرار، في مكان واحد</h2>
+        <div class="feature-grid">
+          <article><h3>سر المكسب والخسارة</h3><p>الربح جاي منين، والفلوس بتضيع فين، بالجنيه وباسم كل صنف.</p></article>
+          <article><h3>حوّل قبل ما تشتري</h3><p>الصنف الناقص في فرع والزيادة في فرع تاني؟ المنصة بتقترح التحويل لوحدها.</p></article>
+          <article><h3>طلبيات شراء جاهزة</h3><p>طلبية لكل مورد بالأولوية، تنزلها Excel وتبعتها على طول.</p></article>
+          <article><h3>الصلاحية بالتشغيلة</h3><p>كل تشغيلة لوحدها، والأقدم يتباع الأول، وتعرف هتلحق تبيع إيه.</p></article>
+          <article><h3>اسأل بياناتك بالعربي</h3><p>"إيه أكتر 5 أصناف بتخسرني في فرع المعادي؟" وخد الإجابة على طول.</p></article>
+          <article><h3>صلاحيات لكل فرع</h3><p>مدير الفرع يشوف فرعه بس، والمالك يشوف كل حاجة.</p></article>
+          <article><h3>التطور مع الوقت</h3><p>كل رفع بيتحفظ، وتشوف الخسارة بتقل ولا بتزيد شهر بشهر.</p></article>
+          <article><h3>ملخص واتساب</h3><p>ملخص النهارده بزرار واحد، للمدير أو للفرع.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="audience">
+      <div class="wrap audience-grid">
+        <div>
+          <h2>معمولة للسلاسل الصغيرة والمتوسطة</h2>
+          <p>لو عندك من 2 لـ 20 فرع، أكبر توفير هييجي من التحويل بين الفروع بدل الشراء، ومن وقف الشراء في الأصناف الراكدة. ولو عندك صيدلية واحدة كبيرة، الصلاحية والراكد لوحدهم يستاهلوا.</p>
+        </div>
+        <ul class="audience-list">
+          <li><b>المالك:</b> يعرف الفلوس رايحة فين في كل فرع.</li>
+          <li><b>مدير المشتريات:</b> طلبيات جاهزة بدل ساعات Excel.</li>
+          <li><b>مدير الفرع:</b> قايمة شغل واضحة لفرعه بس.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="lead-form-section" id="free-analysis">
+      <div class="wrap form-grid">
+        <div class="form-copy">
+          <h2>تحليل مجاني لصيدليتك خلال 24 ساعة</h2>
+          <p>سيب بياناتك وهنكلمك نقولك تطلّع الملفات إزاي من السيستم بتاعك. هتستلم تقرير من صفحة واحدة فيه الفلوس اللي بتضيع، وأهم الأصناف المسؤولة عنها.</p>
+          <ul class="check">
+            <li>مجاني ومن غير أي التزام</li>
+            <li>ملفاتك بتستخدم في التحليل بس</li>
+            <li>تقدر تطلب مسحها في أي وقت</li>
+          </ul>
+        </div>
+        <form class="lead-form" method="post" action="{{ url_for('free_analysis') }}">
+          {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}<p class="form-msg {{ category }}">{{ message }}</p>{% endfor %}
+          {% endwith %}
+          <label>الاسم<input name="name" required maxlength="80" autocomplete="name"></label>
+          <label>رقم الموبايل (واتساب)<input name="phone" required inputmode="tel" maxlength="25" autocomplete="tel" placeholder="01xxxxxxxxx"></label>
+          <label>اسم الصيدلية أو السلسلة<input name="pharmacy" maxlength="120"></label>
+          <div class="two">
+            <label>المدينة<input name="city" maxlength="60"></label>
+            <label>عدد الفروع<input name="branches" type="number" min="1" max="500" value="1"></label>
+          </div>
+          <label>السيستم اللي بتستخدمه
+            <select name="pos_system">
+              <option value="">اختار</option>
+              <option>Julip</option>
+              <option>Ascon</option>
+              <option>Saap</option>
+              <option>Excel</option>
+              <option>سيستم تاني</option>
+            </select>
+          </label>
+          <label>عايز تقول حاجة؟ (اختياري)<textarea name="message" rows="2" maxlength="1000"></textarea></label>
+          <label class="hp" aria-hidden="true">اترك الحقل فاضي<input name="website" tabindex="-1" autocomplete="off"></label>
+          <button class="btn primary full" type="submit">ابعت طلب التحليل المجاني</button>
+          <p class="fine">بالضغط على الزرار إنت موافق على <a href="{{ url_for('privacy') }}">سياسة الخصوصية</a>.</p>
+        </form>
+      </div>
+    </section>
+
+    <section class="faq" id="faq">
+      <div class="wrap">
+        <h2>أسئلة بتتسأل كتير</h2>
+        <details>
+          <summary>محتاج أغير السيستم بتاعي؟</summary>
+          <p>لأ. المنصة بتقرا الملفات اللي السيستم بتاعك بيطلعها أصلاً. إنت بتكمل شغلك زي ما هو.</p>
+        </details>
+        <details>
+          <summary>بياناتي في أمان؟</summary>
+          <p>البيانات بتستخدم في التحليل بس، ومش بتتباع ولا بتتشارك مع أي حد. كل مستخدم بيشوف فروعه بس، وتقدر تطلب مسح بياناتك في أي وقت. التفاصيل في <a href="{{ url_for('privacy') }}">سياسة الخصوصية</a>.</p>
+        </details>
+        <details>
+          <summary>الملفات لازم تكون بشكل معين؟</summary>
+          <p>لأ. Excel أو CSV، عناوين عربي أو إنجليزي، وحتى لو فيها سطور عنوان أو صفوف إجمالي. المنصة بتتعرف على الأعمدة لوحدها، وبتوريك فهمت إيه قبل التحليل.</p>
+        </details>
+        <details>
+          <summary>لو مفيش تكلفة في الملفات؟</summary>
+          <p>المنصة بتقول كده صراحةً وبتحلل على المبيعات بدل ما تخمّن الربح.</p>
+        </details>
+        <details>
+          <summary>بتنفع لغير الصيدليات؟</summary>
+          <p>أيوه، بتدعم كمان السوبر ماركت ومستحضرات التجميل وقطع الغيار وأي تجارة تجزئة.</p>
+        </details>
+        <details>
+          <summary>بكام؟</summary>
+          <p>ابدأ بالتحليل المجاني. بعدها الاشتراك شهري لكل فرع، وبنبعتلك العرض مع التقرير.</p>
+        </details>
+      </div>
+    </section>
+
+    <section class="final-cta">
+      <div class="wrap">
+        <h2>كل شهر من غير ما تعرف الرقم، فيه فلوس بتضيع</h2>
+        <a class="btn primary" href="#free-analysis">اطلب تحليلك المجاني دلوقتي</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>© منصة الصيدليات</span>
+      <nav aria-label="روابط">
+        <a href="{{ url_for('privacy') }}">سياسة الخصوصية</a>
+        <a href="{{ url_for('login') }}">دخول العملاء</a>
+        {% if contact_email %}<a href="mailto:{{ contact_email }}">{{ contact_email }}</a>{% endif %}
+        {% if whatsapp_number %}<a href="{{ whatsapp_url }}" target="_blank" rel="noopener" dir="ltr">+{{ whatsapp_number }}</a>{% endif %}
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

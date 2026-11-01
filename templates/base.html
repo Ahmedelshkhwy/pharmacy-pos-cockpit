@@ -53,6 +53,7 @@
         <a href="{{ url_for('financial') }}">{{ t("financial_panel") }}</a>
         <a href="{{ url_for('abc_analysis') }}">{{ t("abc") }}</a>
         <a href="{{ url_for('trends') }}">{{ t("trends") }}</a>
+        <a href="{{ url_for('free_report') }}">{{ "تقرير صفحة واحدة" if lang == "ar" else "One-page report" }}</a>
       </div>
       <div class="nav-section">
         <span>{{ t("operations") }}</span>
@@ -65,6 +66,7 @@
         <a href="{{ url_for('analysis_settings') }}">{{ t("settings") }}</a>
         <a href="{{ url_for('users_page') }}">{{ t("users") }}</a>
         <a href="{{ url_for('data_management') }}">{{ t("data_management") }}</a>
+        <a href="{{ url_for('leads_page') }}">{{ "طلبات التحليل المجاني" if lang == "ar" else "Free analysis requests" }}</a>
         {% endif %}
         <a href="{{ url_for('change_password') }}">{{ t("password") }}</a>
       </div>
@@ -83,6 +85,15 @@
   </aside>
 
   <main class="main" id="main-content">
+    {% if is_demo_user %}
+    <div class="demo-banner no-print">
+      <span>{% if lang == "ar" %}دي نسخة تجريبية ببيانات وهمية لسلسلة من 4 فروع. عايز نفس التحليل على بيانات صيدليتك؟{% else %}This is a demo with fictional data for a 4-branch chain. Want this on your own pharmacy's data?{% endif %}</span>
+      <form method="post" action="{{ url_for('logout') }}">
+        <input type="hidden" name="next" value="free-analysis">
+        <button class="button primary" type="submit">{% if lang == "ar" %}اطلب تحليلك المجاني{% else %}Get a free analysis{% endif %}</button>
+      </form>
+    </div>
+    {% endif %}
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         <div class="messages">

@@ -11,7 +11,25 @@ services:
         value: admin
       - key: PHARMACY_ADMIN_PASSWORD
         sync: false
-      # PostgreSQL connection string (Render, Supabase, Neon...). Without it data is in SQLite
-      # on the instance disk, which Render wipes on every deploy.
+      # PostgreSQL from the database below. Without it data is in SQLite on the instance disk,
+      # which Render wipes on every deploy.
       - key: DATABASE_URL
+        fromDatabase:
+          name: pharmacy-db
+          property: connectionString
+      # Landing page contact (international format, digits only, e.g. 201001234567).
+      - key: PHARMACY_WHATSAPP_NUMBER
         sync: false
+      - key: PHARMACY_CONTACT_EMAIL
+        sync: false
+      # Public address, printed on the one-page report and on shared WhatsApp summaries.
+      - key: PHARMACY_PUBLIC_URL
+        sync: false
+      # "1" only on a separate demo deployment seeded with `python seed_demo.py`.
+      - key: PHARMACY_DEMO_MODE
+        value: "0"
+
+databases:
+  - name: pharmacy-db
+    databaseName: pharmacy
+    plan: basic-256mb

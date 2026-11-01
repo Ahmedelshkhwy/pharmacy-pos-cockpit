@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}التسويق{% else %}Marketing{% endif %}</p>
+    <h1>{% if ar %}طلبات التحليل المجاني{% else %}Free analysis requests{% endif %}</h1>
+    <p class="subtle">{% if ar %}الطلبات اللي جت من صفحة الهبوط. كلم العميل، استلم ملفاته، وارفعها، وابعتله "تقرير من صفحة واحدة".{% else %}Requests from the landing page. Call, collect the files, upload them, then send the one-page report.{% endif %}</p>
+  </div>
+</section>
+<section class="panel">
+  {% if not leads %}
+  <p class="empty">{% if ar %}مفيش طلبات لسه.{% else %}No requests yet.{% endif %}</p>
+  {% else %}
+  <table class="compact-table">
+    <thead><tr>
+      <th>{% if ar %}التاريخ{% else %}Date{% endif %}</th>
+      <th>{% if ar %}الاسم{% else %}Name{% endif %}</th>
+      <th>{% if ar %}الصيدلية{% else %}Pharmacy{% endif %}</th>
+      <th>{% if ar %}الموبايل{% else %}Phone{% endif %}</th>
+      <th>{% if ar %}المدينة{% else %}City{% endif %}</th>
+      <th>{% if ar %}فروع{% else %}Branches{% endif %}</th>
+      <th>{% if ar %}السيستم{% else %}System{% endif %}</th>
+      <th>{% if ar %}رسالة{% else %}Message{% endif %}</th>
+      <th>{% if ar %}الحالة{% else %}Status{% endif %}</th>
+    </tr></thead>
+    <tbody>
+      {% for lead in leads %}
+      <tr>
+        <td>{{ lead.created_at[:16] }}</td>
+        <td>{{ lead.name }}</td>
+        <td>{{ lead.pharmacy }}</td>
+        <td dir="ltr">{% if lead.wa %}<a href="{{ lead.wa }}" target="_blank" rel="noopener">{{ lead.phone }}</a>{% else %}{{ lead.phone }}{% endif %}</td>
+        <td>{{ lead.city }}</td>
+        <td>{{ lead.branches }}</td>
+        <td>{{ lead.pos_system }}</td>
+        <td>{{ lead.message }}</td>
+        <td>
+          <form method="post">
+            <input type="hidden" name="lead_id" value="{{ lead.id }}">
+            <select name="status" onchange="this.form.submit()" aria-label="{% if ar %}الحالة{% else %}Status{% endif %}">
+              {% for key, label in status_labels.items() %}<option value="{{ key }}" {% if lead.status == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}
