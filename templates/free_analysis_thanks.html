@@ -1,0 +1,18 @@
+{% extends "_public_base.html" %}
+{% block title %}طلبك وصل | منصة الصيدليات{% endblock %}
+{% block content %}
+<h1>طلبك وصل، شكراً!</h1>
+<p>هنكلمك قريب. علشان نبدأ أسرع، جهّز الـ 3 ملفات دول من السيستم بتاعك:</p>
+<ol class="steps-list">
+  <li><b>حركة الأصناف</b> (المبيعات) لآخر 90 يوم.</li>
+  <li><b>الرصيد الحالي</b>، ولو فيه تاريخ صلاحية أو تشغيلة يبقى أحسن.</li>
+  <li><b>تكلفة الرصيد</b> (سعر الشراء).</li>
+</ol>
+<p>أي شكل ينفع: Excel أو CSV، عربي أو إنجليزي، ومن غير أي تعديل.</p>
+{% if whatsapp_url %}
+<p><a class="btn whatsapp" href="{{ whatsapp_url }}" target="_blank" rel="noopener">ابعت الملفات على واتساب</a></p>
+{% elif contact_email %}
+<p>ابعت الملفات على <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>.</p>
+{% endif %}
+<p>هتستلم تقرير من صفحة واحدة خلال 24 ساعة من وصول الملفات.</p>
+{% endblock %}

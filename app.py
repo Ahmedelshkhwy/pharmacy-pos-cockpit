@@ -50,7 +50,15 @@ BRANCH_TEMPLATE_PATH = BASE_DIR / "pharmacy_branch_upload_template.xlsx"
 
 MAX_UPLOAD_FILES = 10
 DEFAULT_ADMIN_USERNAME = os.environ.get("PHARMACY_ADMIN_USERNAME", "admin")
-DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", "admin123")
+KNOWN_DEFAULT_PASSWORD = "admin123"  # published in the README: whoever still uses it must change it
+DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", KNOWN_DEFAULT_PASSWORD)
+
+# Marketing / public site. All optional: the landing page works without them.
+WHATSAPP_NUMBER = re.sub(r"\D", "", os.environ.get("PHARMACY_WHATSAPP_NUMBER", ""))  # international, e.g. 201001234567
+CONTACT_EMAIL = os.environ.get("PHARMACY_CONTACT_EMAIL", "").strip()
+PUBLIC_URL = os.environ.get("PHARMACY_PUBLIC_URL", "").strip().rstrip("/")
+DEMO_MODE = os.environ.get("PHARMACY_DEMO_MODE", "").strip().lower() in {"1", "true", "yes"}
+DEMO_USERNAME = os.environ.get("PHARMACY_DEMO_USERNAME", "demo")
 
 ITEM_EXTRA_COLUMNS = {
     "category": "TEXT NOT NULL DEFAULT 'UNCATEGORIZED'",
@@ -102,6 +110,7 @@ ITEM_EXTRA_COLUMNS = {
 USER_EXTRA_COLUMNS = {
     "role": "TEXT NOT NULL DEFAULT 'owner'",  # users created before roles existed were full admins
     "branches": "TEXT NOT NULL DEFAULT '[]'",
+    "must_change_password": "INTEGER NOT NULL DEFAULT 0",
 }
 
 UPLOAD_EXTRA_COLUMNS = {
@@ -118,6 +127,7 @@ app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 app.jinja_env.auto_reload = True
+app.config["ENFORCE_PASSWORD_CHANGE"] = True
 
 TRANSLATIONS = {
     "en": {
@@ -400,6 +410,19 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_item_history_snapshot ON item_history(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_snapshots_branch ON snapshots(branch, period_end);
 
+            CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                name TEXT NOT NULL,
+                pharmacy TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL,
+                city TEXT NOT NULL DEFAULT '',
+                branches INTEGER NOT NULL DEFAULT 1,
+                pos_system TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'new'
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -423,11 +446,12 @@ def init_db() -> None:
         user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             db.execute(
-                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+                "INSERT INTO users (username, password_hash, created_at, must_change_password) VALUES (?, ?, ?, ?)",
                 (
                     DEFAULT_ADMIN_USERNAME,
                     generate_password_hash(DEFAULT_ADMIN_PASSWORD),
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    1,  # the first password is either the published default or one set in the server env
                 ),
             )
 
@@ -523,6 +547,20 @@ def forbidden(_error: Exception) -> tuple[str, int]:
     return render_template("forbidden.html"), 403
 
 
+PASSWORD_CHANGE_EXEMPT = {"change_password", "logout", "static", "set_language", "privacy", "free_analysis", "free_analysis_thanks"}
+
+
+@app.before_request
+def require_password_change() -> Response | None:
+    """A user on a default or admin-set password must pick their own before using the app."""
+    if not app.config.get("ENFORCE_PASSWORD_CHANGE") or not session.get("must_change_password"):
+        return None
+    if request.endpoint in PASSWORD_CHANGE_EXEMPT:
+        return None
+    flash("لازم تغير كلمة المرور الأول قبل ما تكمل. / Please choose a new password first.", "error")
+    return redirect(url_for("change_password"))
+
+
 def current_language() -> str:
     return session.get("lang", "en") if session.get("lang") in TRANSLATIONS else "en"
 
@@ -546,6 +584,7 @@ def inject_language_helpers() -> dict[str, Any]:
         "scoped_user": allowed_branches() is not None,
         "user": current_user(),
         "roles": ROLES,
+        "is_demo_user": bool(current_user()) and current_user()["username"] == DEMO_USERNAME and DEMO_MODE,
     }
 
 
@@ -1088,8 +1127,144 @@ def dashboard_stats(branch: str | None = None) -> dict[str, Any]:
 
 
 @app.route("/")
+def index() -> str | Response:
+    """Public marketing page for visitors; signed-in users go straight to their dashboard."""
+    if session.get("user_id") and current_user() is not None:
+        return dashboard_page()
+    return render_template(
+        "landing.html",
+        whatsapp_number=WHATSAPP_NUMBER,
+        whatsapp_url=whatsapp_contact_link("أهلاً، عايز تحليل مجاني لصيدليتي"),
+        contact_email=CONTACT_EMAIL,
+        demo_mode=DEMO_MODE,
+    )
+
+
+def whatsapp_contact_link(text: str) -> str:
+    """wa.me link to the company number, or empty when no number is configured."""
+    if not WHATSAPP_NUMBER:
+        return ""
+    from urllib.parse import quote
+
+    return f"https://wa.me/{WHATSAPP_NUMBER}?text={quote(text)}"
+
+
+PHONE_PATTERN = re.compile(r"^\+?[0-9٠-٩][0-9٠-٩ \-]{6,18}$")
+
+
+@app.route("/free-analysis", methods=["POST"])
+def free_analysis() -> Response:
+    form = request.form
+    if form.get("website"):  # honeypot: real visitors never see or fill this field
+        return redirect(url_for("free_analysis_thanks"))
+    name = form.get("name", "").strip()[:80]
+    phone = form.get("phone", "").strip()[:25]
+    if not name or not PHONE_PATTERN.match(phone):
+        flash("اكتب اسمك ورقم موبايل صحيح علشان نقدر نكلمك.", "error")
+        return redirect(url_for("index") + "#free-analysis")
+    lead = {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "name": name,
+        "pharmacy": form.get("pharmacy", "").strip()[:120],
+        "phone": phone,
+        "city": form.get("city", "").strip()[:60],
+        "branches": max(1, min(parse_int(form.get("branches"), 1), 500)),
+        "pos_system": form.get("pos_system", "").strip()[:60],
+        "message": form.get("message", "").strip()[:1000],
+    }
+    with get_db() as db:
+        db.execute(
+            f"INSERT INTO leads ({', '.join(lead)}) VALUES ({', '.join('?' for _ in lead)})",
+            tuple(lead.values()),
+        )
+    session["lead_name"] = name
+    session["lead_pharmacy"] = lead["pharmacy"]
+    return redirect(url_for("free_analysis_thanks"))
+
+
+@app.route("/free-analysis/thanks")
+def free_analysis_thanks() -> str:
+    name = session.get("lead_name", "")
+    pharmacy = session.get("lead_pharmacy", "")
+    text = f"أهلاً، أنا {name}" + (f" من {pharmacy}" if pharmacy else "") + ". طلبت تحليل مجاني وهبعتلكم ملفات السيستم."
+    return render_template("free_analysis_thanks.html", whatsapp_url=whatsapp_contact_link(text), contact_email=CONTACT_EMAIL)
+
+
+@app.route("/privacy")
+def privacy() -> str:
+    return render_template("privacy.html", contact_email=CONTACT_EMAIL, whatsapp_number=WHATSAPP_NUMBER)
+
+
+@app.route("/demo")
+def demo_login() -> Response:
+    """One-click read-only demo (only when PHARMACY_DEMO_MODE is on and seed_demo.py created the user)."""
+    if not DEMO_MODE:
+        abort(404)
+    with get_db() as db:
+        user = db.execute("SELECT * FROM users WHERE username = ?", (DEMO_USERNAME,)).fetchone()
+    if not user or user["role"] != "viewer":
+        abort(404)
+    session.clear()
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    session["lang"] = "ar"
+    return redirect(url_for("index"))
+
+
+STATUS_LABELS = {"new": "جديد", "contacted": "اتكلمنا", "report_sent": "التقرير اتبعت", "trial": "تجربة", "customer": "عميل", "lost": "مش مهتم"}
+
+
+@app.route("/leads", methods=["GET", "POST"])
 @login_required
-def index() -> str:
+@permission_required("admin")
+def leads_page() -> str | Response:
+    if request.method == "POST":
+        status = request.form.get("status", "")
+        if status not in STATUS_LABELS:
+            abort(400)
+        with get_db() as db:
+            db.execute("UPDATE leads SET status = ? WHERE id = ?", (status, parse_int(request.form.get("lead_id"), 0)))
+        return redirect(url_for("leads_page"))
+    with get_db() as db:
+        leads = [dict(row) for row in db.execute("SELECT * FROM leads ORDER BY id DESC")]
+    for lead in leads:
+        number = re.sub(r"\D", "", lead["phone"].translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
+        if number.startswith("0"):
+            number = "2" + number  # Egyptian local format 01xxxxxxxxx -> 201xxxxxxxxx
+        lead["wa"] = f"https://wa.me/{number}" if number else ""
+    return render_template("leads.html", leads=leads, status_labels=STATUS_LABELS)
+
+
+@app.route("/free-report")
+@login_required
+def free_report() -> str:
+    """One printable page for the free analysis: the money that leaks, and the items behind it."""
+    branch = selected_branch(request.args.get("branch"))
+    pl = profit_loss_for(branch)
+    top_items = sorted(
+        (
+            {**item, "driver_ar": driver["title_ar"], "driver_en": driver["title_en"], "kind": driver["kind"]}
+            for driver in pl.get("drivers", [])
+            if driver["kind"] in {"loss", "frozen"}
+            for item in driver["top_items"]
+        ),
+        key=lambda item: -item["amount"],
+    )[:10]
+    return render_template(
+        "free_report.html",
+        pl=pl,
+        top_items=top_items,
+        plan=action_plan(branch),
+        selected_branch=branch,
+        branch_options=branch_options(),
+        today=date.today().isoformat(),
+        contact_email=CONTACT_EMAIL,
+        whatsapp_number=WHATSAPP_NUMBER,
+        public_url=PUBLIC_URL,
+    )
+
+
+def dashboard_page() -> str:
     branch = selected_branch(request.args.get("branch"))
     data = dashboard_stats(branch)
     return render_template(
@@ -1454,8 +1629,15 @@ def action_plan(branch: str | None = None) -> dict[str, Any]:
         "fixes": fixes,
         "stop_list": action_plans.stop_buying(branch_rows),
         "branch_count": len({row["branch"] for row in rows}),
-        "digest": action_plans.digest_text(branch, transfers, orders, expiring, fixes, current_language()),
+        "digest": action_plans.digest_text(branch, transfers, orders, expiring, fixes, current_language()) + digest_footer(),
     }
+
+
+def digest_footer() -> str:
+    """A small signature on shared summaries: every forwarded summary tells people where it came from."""
+    ar = current_language() == "ar"
+    line = "اتعمل بمنصة الصيدليات" if ar else "Made with the Pharmacy Platform"
+    return f"\n\n— {line}" + (f" {PUBLIC_URL}" if PUBLIC_URL else "")
 
 
 @app.route("/actions")
@@ -2076,7 +2258,7 @@ def users_page() -> str | Response:
                     flash("اسم المستخدم ده موجود. / Username already exists.", "error")
                 else:
                     db.execute(
-                        "INSERT INTO users (username, password_hash, created_at, role, branches) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO users (username, password_hash, created_at, role, branches, must_change_password) VALUES (?, ?, ?, ?, ?, 1)",
                         (username, generate_password_hash(password), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, branches),
                     )
                     flash(f"اتعمل حساب {username}. / Created {username}.", "success")
@@ -2096,7 +2278,7 @@ def users_page() -> str | Response:
                 if len(password) < 8:
                     flash("كلمة المرور 8 حروف على الأقل. / Password must be 8+ characters.", "error")
                 else:
-                    db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(password), user_id))
+                    db.execute("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?", (generate_password_hash(password), user_id))
                     flash(f"اتغيرت كلمة مرور {target['username']}. / Password reset.", "success")
             elif action == "delete":
                 if target["id"] == session.get("user_id"):
@@ -2295,7 +2477,18 @@ def login() -> str | Response:
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     session["lang"] = lang
-    return redirect(request.args.get("next") or url_for("index"))
+    if app.config.get("ENFORCE_PASSWORD_CHANGE") and (user["must_change_password"] or check_password_hash(user["password_hash"], KNOWN_DEFAULT_PASSWORD)):
+        session["must_change_password"] = True
+        flash("أول مرة تدخل، أو كلمة المرور افتراضية: اختار كلمة مرور جديدة علشان تكمل. / Choose a new password to continue.", "error")
+        return redirect(url_for("change_password"))
+    return redirect(safe_next(request.args.get("next")) or url_for("index"))
+
+
+def safe_next(target: str | None) -> str | None:
+    """Only follow local paths after login (no open redirect to another site)."""
+    if target and target.startswith("/") and not target.startswith("//") and "\\" not in target:
+        return target
+    return None
 
 
 @app.route("/logout", methods=["POST"])
@@ -2303,6 +2496,8 @@ def logout() -> Response:
     lang = current_language()
     session.clear()
     session["lang"] = lang
+    if request.form.get("next") == "free-analysis":  # leaving the demo to request a real analysis
+        return redirect(url_for("index") + "#free-analysis")
     flash("تم تسجيل الخروج بنجاح.", "success")
     return redirect(url_for("login"))
 
@@ -2320,6 +2515,9 @@ def change_password() -> str | Response:
     if len(new_password) < 8:
         flash("كلمة المرور الجديدة يجب أن تكون 8 أحرف على الأقل.", "error")
         return redirect(url_for("change_password"))
+    if new_password in {KNOWN_DEFAULT_PASSWORD, current_password}:
+        flash("اختار كلمة مرور جديدة مختلفة عن الحالية وعن الافتراضية.", "error")
+        return redirect(url_for("change_password"))
     if new_password != confirm_password:
         flash("تأكيد كلمة المرور غير مطابق.", "error")
         return redirect(url_for("change_password"))
@@ -2330,9 +2528,10 @@ def change_password() -> str | Response:
             flash("كلمة المرور الحالية غير صحيحة.", "error")
             return redirect(url_for("change_password"))
         db.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
+            "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
             (generate_password_hash(new_password), session["user_id"]),
         )
+    session.pop("must_change_password", None)
 
     flash("تم تغيير كلمة المرور بنجاح.", "success")
     return redirect(url_for("index"))

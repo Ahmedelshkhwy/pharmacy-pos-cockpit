@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head no-print">
+  <div>
+    <p class="eyebrow">{% if ar %}للتحليل المجاني والعروض{% else %}For free analyses and pitches{% endif %}</p>
+    <h1>{% if ar %}تقرير من صفحة واحدة{% else %}One-page report{% endif %}</h1>
+    <p class="subtle">{% if ar %}اطبعه أو احفظه PDF من زرار الطباعة، وابعته للعميل.{% else %}Print it or save it as PDF, then send it to the prospect.{% endif %}</p>
+  </div>
+  <form class="header-filter" method="get">
+    <label>
+      <span>{{ t("branch_filter") }}</span>
+      <select name="branch" onchange="this.form.submit()">
+        {% if not scoped_user %}<option value="all">{{ t("all_branches") }}</option>{% endif %}
+        {% for branch in branch_options %}<option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>{% endfor %}
+      </select>
+    </label>
+    <button class="button primary" type="button" onclick="window.print()">{% if ar %}اطبع / PDF{% else %}Print / PDF{% endif %}</button>
+  </form>
+</section>
+
+{% if not pl.has_data %}
+<section class="panel">
+  <p class="empty">{% if ar %}مفيش بيانات لسه. ارفع ملفات العميل الأول.{% else %}No data yet. Upload the prospect's files first.{% endif %}</p>
+  {% if can("upload") %}<a class="button primary" href="{{ url_for('upload') }}">{{ t("upload_excel") }}</a>{% endif %}
+</section>
+{% else %}
+{% set leak = pl.total_loss + pl.total_frozen %}
+<article class="one-pager">
+  <header class="op-head">
+    <div>
+      <h2>{% if ar %}سر المكسب والخسارة{% else %}Profit & loss drivers{% endif %}{% if selected_branch %} · {{ selected_branch }}{% endif %}</h2>
+      <p>{% if ar %}تاريخ التقرير{% else %}Report date{% endif %}: {{ today }}{% if pl.period_days %} · {% if ar %}فترة المبيعات{% else %}Sales period{% endif %}: {{ pl.period_days }} {% if ar %}يوم{% else %}days{% endif %}{% endif %}</p>
+    </div>
+    <strong class="op-brand">{% if ar %}منصة الصيدليات{% else %}Pharmacy Platform{% endif %}</strong>
+  </header>
+
+  <section class="op-hero">
+    <span>{% if ar %}فلوس بتضيع أو متجمدة{% else %}Money leaking or frozen{% endif %}</span>
+    <strong>{{ "{:,.0f}".format(leak) }} {% if ar %}ج{% endif %}</strong>
+    <p>{% if ar %}خسائر فعلية ومتوقعة{% else %}Actual & expected losses{% endif %} {{ "{:,.0f}".format(pl.total_loss) }} · {% if ar %}فلوس متجمدة{% else %}Frozen cash{% endif %} {{ "{:,.0f}".format(pl.total_frozen) }}</p>
+  </section>
+
+  <section class="op-drivers">
+    {% for driver in pl.drivers if driver.kind in ["loss", "frozen"] and driver.amount > 0 %}
+    <div class="op-driver {{ driver.kind }}">
+      <span>{{ driver.title_ar if ar else driver.title_en }}</span>
+      <b>{{ "{:,.0f}".format(driver.amount) }}</b>
+      <small>{{ driver.items_count }} {% if ar %}صنف{% else %}items{% endif %}</small>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="op-story">
+    <h3>{% if ar %}الخلاصة{% else %}In short{% endif %}</h3>
+    <ol>{% for line in (pl.headline_ar if ar else pl.headline_en) %}<li>{{ line }}</li>{% endfor %}</ol>
+  </section>
+
+  <section>
+    <h3>{% if ar %}أهم 10 أصناف مسؤولة{% else %}Top 10 items behind it{% endif %}</h3>
+    <table class="compact-table fit-table op-table">
+      <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{% if ar %}السبب{% else %}Why{% endif %}</th><th>{% if ar %}القيمة{% else %}Amount{% endif %}</th></tr></thead>
+      <tbody>
+        {% for item in top_items %}
+        <tr>
+          <td>{{ item.name }}</td>
+          {% if not selected_branch %}<td>{{ item.branch }}</td>{% endif %}
+          <td>{{ item.driver_ar if ar else item.driver_en }}</td>
+          <td><strong>{{ "{:,.0f}".format(item.amount) }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="op-actions">
+    <h3>{% if ar %}تعمل إيه الأسبوع ده{% else %}What to do this week{% endif %}</h3>
+    <ul>
+      {% if plan.transfers %}<li>{% if ar %}🔁 {{ plan.transfers|length }} تحويل بين الفروع بقيمة {{ "{:,.0f}".format(plan.transfers|sum(attribute="value")) }} بدل الشراء.{% else %}🔁 {{ plan.transfers|length }} branch transfers worth {{ "{:,.0f}".format(plan.transfers|sum(attribute="value")) }} instead of buying.{% endif %}</li>{% endif %}
+      {% if plan.expiring %}<li>{% if ar %}⏳ {{ plan.expiring|length }} صنف صلاحيته قربت: عرض أو مرتجع للمورد.{% else %}⏳ {{ plan.expiring|length }} items near expiry: promote or return.{% endif %}</li>{% endif %}
+      {% if plan.fixes %}<li>{% if ar %}⚠️ {{ plan.fixes|length }} صنف بيتباع بأقل من التكلفة: صحّح السعر.{% else %}⚠️ {{ plan.fixes|length }} items sell below cost: fix the price.{% endif %}</li>{% endif %}
+      {% if plan.stop_list %}<li>{% if ar %}✋ وقّف شراء {{ plan.stop_list|length }} صنف راكد أو زيادة.{% else %}✋ Stop buying {{ plan.stop_list|length }} dead or overstocked items.{% endif %}</li>{% endif %}
+      {% if plan.orders %}<li>{% if ar %}🛒 طلبيات شراء جاهزة لـ {{ plan.orders|map(attribute="supplier")|unique|list|length }} مورد.{% else %}🛒 Purchase orders ready for {{ plan.orders|map(attribute="supplier")|unique|list|length }} suppliers.{% endif %}</li>{% endif %}
+    </ul>
+  </section>
+
+  <footer class="op-foot">
+    <p>{% if ar %}عايز تتابع الأرقام دي كل أسبوع، وتوصلك قايمة الشغل على واتساب؟ كلمنا.{% else %}Want these numbers every week, with the action list on WhatsApp? Get in touch.{% endif %}</p>
+    <p>
+      {% if whatsapp_number %}<span dir="ltr">+{{ whatsapp_number }}</span>{% endif %}
+      {% if contact_email %} · {{ contact_email }}{% endif %}
+      {% if public_url %} · <span dir="ltr">{{ public_url }}</span>{% endif %}
+    </p>
+  </footer>
+</article>
+{% endif %}
+{% endblock %}

@@ -16,3 +16,13 @@ def clean_postgres():
             conn.execute("DROP SCHEMA public CASCADE")
             conn.execute("CREATE SCHEMA public")
     yield
+
+
+@pytest.fixture(autouse=True)
+def skip_forced_password_change():
+    """Most tests log in with the default admin password; the forced change has its own tests."""
+    import app as appmod
+
+    appmod.app.config["ENFORCE_PASSWORD_CHANGE"] = False
+    yield
+    appmod.app.config["ENFORCE_PASSWORD_CHANGE"] = True

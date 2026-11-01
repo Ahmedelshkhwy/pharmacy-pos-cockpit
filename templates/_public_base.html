@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}منصة الصيدليات{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='landing.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="logo" href="{{ url_for('index') }}">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M21 8h6v8h8v6h-8v8h-6v-8h-8v-6h8z"/></svg>
+        <span>منصة الصيدليات</span>
+      </a>
+      <nav class="topnav" aria-label="روابط">
+        <a class="login-link" href="{{ url_for('login') }}">دخول العملاء</a>
+      </nav>
+    </div>
+  </header>
+  <main class="page">
+    <div class="wrap">
+      <article class="page-card">
+        {% block content %}{% endblock %}
+      </article>
+    </div>
+  </main>
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>© منصة الصيدليات</span>
+      <nav aria-label="روابط"><a href="{{ url_for('index') }}">الرئيسية</a><a href="{{ url_for('privacy') }}">سياسة الخصوصية</a></nav>
+    </div>
+  </footer>
+</body>
+</html>
