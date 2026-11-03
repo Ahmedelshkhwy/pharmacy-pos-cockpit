@@ -114,3 +114,27 @@ def test_errors_do_not_show_internals(client, tmp_path):
     assert "Traceback" not in page and "Error" not in page.split("broken.xlsx", 1)[1][:200]
     missing = client.get("/no-such-page")
     assert missing.status_code == 404 and "Werkzeug" not in missing.data.decode()
+
+
+def test_owner_can_recover_access_with_a_server_variable(client, monkeypatch):
+    import app as appmod
+
+    with appmod.get_db() as db:
+        db.execute("UPDATE users SET role = 'viewer' WHERE username = 'admin'")  # even a demoted account
+    for _ in range(appmod.LOGIN_MAX_FAILURES_PER_USER):
+        appmod.app.test_client().post("/login", data={"username": "admin", "password": "forgotten"})
+    monkeypatch.setenv("PHARMACY_RESET_ADMIN_PASSWORD", "Recovered-2026")
+    appmod.apply_password_reset()
+    appmod.app.config["ENFORCE_PASSWORD_CHANGE"] = True
+    fresh = appmod.app.test_client()
+    response = fresh.post("/login", data={"username": "admin", "password": "Recovered-2026"})
+    assert response.headers["Location"].endswith("/change-password")  # unlocked, must pick a new one
+    with appmod.get_db() as db:
+        assert db.execute("SELECT role FROM users WHERE username = 'admin'").fetchone()[0] == "owner"
+        db.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (appmod.generate_password_hash("Chosen-Later-1"),))
+    appmod.apply_password_reset()  # the variable was left on the server: not applied a second time
+    assert appmod.app.test_client().post("/login", data={"username": "admin", "password": "Chosen-Later-1"}).status_code == 302
+    with appmod.get_db() as db:
+        assert appmod.check_password_hash(db.execute("SELECT password_hash FROM users WHERE username = 'admin'").fetchone()[0], "Chosen-Later-1")
+    monkeypatch.setenv("PHARMACY_RESET_ADMIN_PASSWORD", "short")
+    appmod.apply_password_reset()  # too short: ignored
