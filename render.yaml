@@ -19,7 +19,7 @@ services:
         fromDatabase:
           name: pharmacy-db
           property: connectionString
-      # Landing page contact (international format, digits only, e.g. 201001234567).
+      # Landing page contact: 201001234567 / 966501234567, or local Egyptian 01... / Saudi 05...
       - key: PHARMACY_WHATSAPP_NUMBER
         sync: false
       - key: PHARMACY_CONTACT_EMAIL
