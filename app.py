@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -501,6 +502,37 @@ def init_db() -> None:
                     1,  # the first password was set by the server, not the person: they choose their own
                 ),
             )
+
+
+def apply_password_reset() -> None:
+    """Account recovery without database access: set PHARMACY_RESET_ADMIN_PASSWORD on the server and
+    restart. The account (PHARMACY_RESET_ADMIN_USERNAME, default "admin") gets that password, becomes
+    an owner, is unlocked, and must choose a new password at login. Each value is applied once, so a
+    variable left behind does not reset the password again on every restart."""
+    password = os.environ.get("PHARMACY_RESET_ADMIN_PASSWORD", "")
+    if not password:
+        return
+    username = os.environ.get("PHARMACY_RESET_ADMIN_USERNAME", "").strip() or DEFAULT_ADMIN_USERNAME
+    if len(password) < 8:
+        logger.error("PHARMACY_RESET_ADMIN_PASSWORD must be at least 8 characters; nothing was reset.")
+        return
+    fingerprint = hashlib.sha256(f"{username}:{password}".encode()).hexdigest()
+    with get_db() as db:
+        done = db.execute("SELECT value FROM app_settings WHERE key = 'password_reset_applied'").fetchone()
+        if done and done["value"] == fingerprint:
+            logger.warning("PHARMACY_RESET_ADMIN_PASSWORD was already applied; remove it from the server settings.")
+            return
+        hashed = generate_password_hash(password)
+        if db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+            db.execute("UPDATE users SET password_hash = ?, must_change_password = 1, role = 'owner' WHERE username = ?", (hashed, username))
+        else:
+            db.execute(
+                "INSERT INTO users (username, password_hash, created_at, role, must_change_password) VALUES (?, ?, ?, 'owner', 1)",
+                (username, hashed, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+        db.execute("DELETE FROM login_failures WHERE username = ?", (username.casefold(),))
+        db.upsert("app_settings", "key", {"key": "password_reset_applied", "value": fingerprint})
+    logger.warning("Password reset applied for %r. Log in with it, choose a new password, then remove PHARMACY_RESET_ADMIN_PASSWORD.", username)
 
 
 def initial_admin_password() -> str:
@@ -2721,6 +2753,7 @@ def change_password() -> str | Response:
 
 
 init_db()
+apply_password_reset()
 backfill_snapshots()
 
 
