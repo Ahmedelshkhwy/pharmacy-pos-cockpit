@@ -49,6 +49,7 @@
           <input type="password" name="password" autocomplete="current-password" required>
         </label>
         <button class="button primary" type="submit">{{ t("login") }}</button>
+        <p class="auth-switch">{% if lang == "ar" %}أول مرة؟{% else %}New here?{% endif %} <a href="{{ url_for('signup') }}">{% if lang == "ar" %}اعمل حساب لجهتك مجاناً{% else %}Create a free account{% endif %}</a></p>
       </form>
     </section>
   </main>

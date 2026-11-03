@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}إدارة المنصة{% else %}Platform{% endif %}</p>
+    <h1>{% if ar %}الجهات المشتركة{% else %}Organizations{% endif %}</h1>
+    <p class="subtle">{% if ar %}كل جهة ليها بياناتها ومستخدمينها لوحدها، ومحدش يشوف بيانات غيره. من هنا تتابع مين بيستخدم الأداة، وتوقف أي جهة أو ترجعها.{% else %}Each organization has its own data and users, invisible to the others. Follow who uses the tool, and suspend or reactivate an organization.{% endif %}</p>
+  </div>
+</section>
+<section class="panel">
+  <p class="subtle">{% if ar %}عدد الجهات:{% else %}Organizations:{% endif %} <strong>{{ orgs|length }}</strong>
+    · {% if ar %}نشطة:{% else %}active:{% endif %} <strong>{{ orgs|selectattr("status", "equalto", "active")|list|length }}</strong>
+    · {% if ar %}رفعت ملفات:{% else %}with uploads:{% endif %} <strong>{{ orgs|selectattr("uploads")|list|length }}</strong></p>
+  <div class="table-wrap">
+  <table class="compact-table">
+    <thead><tr>
+      <th>#</th>
+      <th>{% if ar %}الجهة{% else %}Organization{% endif %}</th>
+      <th>{% if ar %}النشاط{% else %}Type{% endif %}</th>
+      <th>{% if ar %}المالك{% else %}Owner{% endif %}</th>
+      <th>{% if ar %}المستخدمين{% else %}Users{% endif %}</th>
+      <th>{% if ar %}الفروع{% else %}Branches{% endif %}</th>
+      <th>{% if ar %}الملفات{% else %}Uploads{% endif %}</th>
+      <th>{% if ar %}آخر رفع{% else %}Last upload{% endif %}</th>
+      <th>{% if ar %}اتسجلت{% else %}Signed up{% endif %}</th>
+      <th>{% if ar %}الحالة{% else %}Status{% endif %}</th>
+    </tr></thead>
+    <tbody>
+      {% for org in orgs %}
+      <tr>
+        <td>{{ org.id }}</td>
+        <td>{{ org.name }}</td>
+        <td>{{ profiles[org.business_type].label[0 if ar else 1] if org.business_type in profiles else org.business_type }}</td>
+        <td>{{ org.owner_name or "-" }}</td>
+        <td>{{ org.user_count }}</td>
+        <td>{{ org.branches }}</td>
+        <td>{{ org.uploads }}</td>
+        <td>{{ (org.last_upload or "-")[:16] }}</td>
+        <td>{{ (org.created_at or "")[:10] }}</td>
+        <td>
+          <span class="status-pill {{ org.status }}">{% if org.status == "suspended" %}{% if ar %}متوقفة{% else %}Suspended{% endif %}{% else %}{% if ar %}نشطة{% else %}Active{% endif %}{% endif %}</span>
+          {% if org.id != 1 %}
+          <form method="post" class="inline-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="org_id" value="{{ org.id }}">
+            {% if org.status == "suspended" %}
+            <input type="hidden" name="status" value="active">
+            <button class="button" type="submit">{% if ar %}تفعيل{% else %}Activate{% endif %}</button>
+            {% else %}
+            <input type="hidden" name="status" value="suspended">
+            <button class="button danger" type="submit" onclick="return confirm('{% if ar %}توقف الجهة دي؟ مستخدمينها مش هيقدروا يدخلوا.{% else %}Suspend this organization? Its users will not be able to log in.{% endif %}')">{% if ar %}إيقاف{% else %}Suspend{% endif %}</button>
+            {% endif %}
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

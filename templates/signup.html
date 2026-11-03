@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ text_dir }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if lang == "ar" %}إنشاء حساب{% else %}Create account{% endif %} - {{ t("app_name") }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="auth-brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img" focusable="false">
+            <path class="logo-hands" d="M9 29c4 0 6 4 10 4h10c4 0 6-4 10-4" />
+            <path class="logo-bowl" d="M13 30c2 7 7 11 11 11s9-4 11-11" />
+            <path class="logo-cross" d="M21 8h6v8h8v6h-8v8h-6v-8h-8v-6h8z" />
+          </svg>
+        </span>
+        <div>
+          <p class="eyebrow">{{ t("app_name") }}</p>
+          <p class="brand-description">{% if lang == "ar" %}صيدلية، سوبر ماركت، محل، قطع غيار: ارفع ملفات نظام البيع واعرف فلوسك بتضيع فين.{% else %}Pharmacy, grocery, retail, spare parts: upload your POS files and see where the money leaks.{% endif %}</p>
+          <h1>{% if lang == "ar" %}إنشاء حساب لجهتك{% else %}Create your organization{% endif %}</h1>
+        </div>
+      </div>
+      <form class="language-form auth-language" method="post" action="{{ url_for('set_language', lang_code=next_lang) }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit">{{ t("language_toggle") }}</button>
+      </form>
+
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="messages">
+            {% for category, message in messages %}
+              <div class="message {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      {% set ar = lang == "ar" %}
+      <form method="post" class="auth-form" action="{{ url_for('signup') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>
+          <span>{% if ar %}اسم الجهة (الصيدلية / المحل / الشركة){% else %}Organization name{% endif %}</span>
+          <input name="org_name" value="{{ form.org_name or '' }}" maxlength="80" required autofocus>
+        </label>
+        <label>
+          <span>{% if ar %}نوع النشاط{% else %}Business type{% endif %}</span>
+          <select name="business_type" required>
+            {% for key, profile in profiles.items() %}<option value="{{ key }}" {% if form.business_type == key %}selected{% endif %}>{{ profile.label[0 if ar else 1] }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>{{ t("username") }}</span>
+          <input name="username" value="{{ form.username or '' }}" autocomplete="username" maxlength="40" required>
+        </label>
+        <label>
+          <span>{{ t("password") }} {% if ar %}(8 أحرف على الأقل){% else %}(8+ characters){% endif %}</span>
+          <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label>
+          <span>{% if ar %}تأكيد كلمة المرور{% else %}Confirm password{% endif %}</span>
+          <input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <label class="honeypot" aria-hidden="true">
+          <span>Website</span>
+          <input name="website" tabindex="-1" autocomplete="off">
+        </label>
+        <button class="button primary" type="submit">{% if ar %}إنشاء الحساب{% else %}Create account{% endif %}</button>
+        <p class="auth-switch">{% if ar %}عندك حساب؟{% else %}Have an account?{% endif %} <a href="{{ url_for('login') }}">{{ t("login") }}</a></p>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

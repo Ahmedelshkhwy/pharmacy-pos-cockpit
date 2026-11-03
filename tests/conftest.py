@@ -16,6 +16,8 @@ def clean_postgres():
         import psycopg
 
         with psycopg.connect(url, autocommit=True) as conn:
+            for (schema,) in conn.execute("SELECT nspname FROM pg_namespace WHERE nspname LIKE 'org\\_%'").fetchall():
+                conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
             conn.execute("DROP SCHEMA public CASCADE")
             conn.execute("CREATE SCHEMA public")
     yield

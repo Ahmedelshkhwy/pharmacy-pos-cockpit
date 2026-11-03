@@ -58,17 +58,33 @@ class Cursor:
 
 
 class Connection:
-    def __init__(self, url: str | None, sqlite_path: Path) -> None:
+    """One connection to an organization's space.
+
+    Shared tables (users, organizations, leads, ...) live in the main space. Another organization's
+    business tables live in its own space, and unqualified table names find them first:
+    - PostgreSQL: schema `schema`, with search_path "<schema>, public";
+    - SQLite: its own file, with the main file attached, so shared tables still resolve.
+    Isolation therefore does not depend on every query remembering an organization filter.
+    """
+
+    def __init__(self, url: str | None, sqlite_path: Path, schema: str | None = None, attach: Path | None = None) -> None:
         self.is_postgres = bool(url)
         if self.is_postgres:
             if psycopg is None:
                 raise RuntimeError("DATABASE_URL is set but psycopg is not installed (pip install 'psycopg[binary]').")
             self._conn = psycopg.connect(url, row_factory=_row_factory)
+            if schema:
+                if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
+                    raise ValueError(f"Invalid schema name: {schema!r}")
+                self._conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+                self._conn.execute(f'SET search_path TO "{schema}", public')
         else:
             sqlite_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(sqlite_path)
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA foreign_keys = ON")
+            if attach is not None:
+                self._conn.execute("ATTACH DATABASE ? AS platform", (str(attach),))
 
     # -- statements --------------------------------------------------------------------
     def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor:
@@ -108,7 +124,9 @@ class Connection:
 
     def table_columns(self, table: str) -> set[str]:
         if self.is_postgres:
-            rows = self.execute("SELECT column_name FROM information_schema.columns WHERE table_name = ?", (table,)).fetchall()
+            rows = self.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ? AND table_schema = current_schema()", (table,)
+            ).fetchall()
             return {row[0] for row in rows}
         return {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
@@ -126,8 +144,8 @@ class Connection:
             self._conn.close()
 
 
-def connect(url: str | None, sqlite_path: Path) -> Connection:
-    return Connection(url, sqlite_path)
+def connect(url: str | None, sqlite_path: Path, schema: str | None = None, attach: Path | None = None) -> Connection:
+    return Connection(url, sqlite_path, schema=schema, attach=attach)
 
 
 def describe(url: str | None) -> str:
