@@ -37,12 +37,14 @@
     <details>
       <summary>{% if ar %}تعديل{% else %}Edit{% endif %}</summary>
       <form method="post" class="form user-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="user_id" value="{{ entry.id }}">
         <label><span>{% if ar %}الدور{% else %}Role{% endif %}</span>{{ role_select(entry.role) }}</label>
         <label class="wide"><span>{% if ar %}الفروع (لمدير الفرع والمشاهد){% else %}Branches (managers and viewers){% endif %}</span>{{ branch_checks(entry.branch_list) }}</label>
         <button class="button primary" type="submit" name="action" value="update">{% if ar %}احفظ{% else %}Save{% endif %}</button>
       </form>
       <form method="post" class="form user-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="user_id" value="{{ entry.id }}">
         <input type="hidden" name="role" value="{{ entry.role }}">
         <label><span>{% if ar %}كلمة مرور جديدة{% else %}New password{% endif %}</span><input type="password" name="password" minlength="8" autocomplete="new-password"></label>
@@ -57,6 +59,7 @@
 </section>
 
 <form method="post" class="panel form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="action" value="create">
   <h2 class="wide">{% if ar %}مستخدم جديد{% else %}New user{% endif %}</h2>
   <label><span>{{ t("username") }}</span><input name="username" required minlength="3" maxlength="40" pattern="[\w.@\-]+" autocomplete="off"></label>

@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import json
+import logging
 import os
 import re
 import secrets
 import shutil
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, abort, flash, g, redirect, render_template, request, send_file, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import actions as action_plans
@@ -50,8 +53,8 @@ BRANCH_TEMPLATE_PATH = BASE_DIR / "pharmacy_branch_upload_template.xlsx"
 
 MAX_UPLOAD_FILES = 10
 DEFAULT_ADMIN_USERNAME = os.environ.get("PHARMACY_ADMIN_USERNAME", "admin")
-KNOWN_DEFAULT_PASSWORD = "admin123"  # published in the README: whoever still uses it must change it
-DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", KNOWN_DEFAULT_PASSWORD)
+KNOWN_DEFAULT_PASSWORD = "admin123"  # old installs shipped with it: whoever still uses it must change it
+DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", "").strip()  # empty -> a random one is generated
 
 # Marketing / public site. All optional: the landing page works without them.
 WHATSAPP_NUMBER = re.sub(r"\D", "", os.environ.get("PHARMACY_WHATSAPP_NUMBER", ""))  # international, e.g. 201001234567
@@ -121,13 +124,54 @@ UPLOAD_EXTRA_COLUMNS = {
 }
 
 
+logging.basicConfig(level=os.environ.get("PHARMACY_LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("pharmacy")
+
+ON_RENDER = bool(os.environ.get("RENDER"))  # Render sets this on every service
+DEV_MODE = os.environ.get("PHARMACY_DEV", "").strip().lower() in {"1", "true", "yes"}
+LOGIN_LOCK_MINUTES = 15
+LOGIN_MAX_FAILURES_PER_USER = 5
+LOGIN_MAX_FAILURES_PER_IP = 20
+
+
+def load_secret_key() -> str:
+    """PHARMACY_SECRET_KEY, or a random key kept in instance/secret_key so sessions survive restarts.
+
+    Never a fixed fallback: anyone who knows a fixed key can forge a login session.
+    """
+    if os.environ.get("PHARMACY_SECRET_KEY"):
+        return os.environ["PHARMACY_SECRET_KEY"]
+    key_path = DATA_DIR / "secret_key"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(secrets.token_urlsafe(48))
+    except FileExistsError:
+        pass  # another worker created it first
+    for _ in range(50):
+        key = key_path.read_text().strip()
+        if key:
+            return key
+    raise RuntimeError(f"Could not read {key_path}")
+
+
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("PHARMACY_SECRET_KEY", "change-this-secret-key")
+app.config["SECRET_KEY"] = load_secret_key()
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
-app.config["TEMPLATES_AUTO_RELOAD"] = True
-app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
-app.jinja_env.auto_reload = True
 app.config["ENFORCE_PASSWORD_CHANGE"] = True
+app.config["CSRF_ENABLED"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+secure_cookies = os.environ.get("PHARMACY_SECURE_COOKIES", "").strip().lower()
+app.config["SESSION_COOKIE_SECURE"] = secure_cookies in {"1", "true", "yes"} if secure_cookies else ON_RENDER
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=12)
+if DEV_MODE:  # edit templates and static files without restarting; never in production
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+if ON_RENDER or os.environ.get("PHARMACY_BEHIND_PROXY"):
+    # Behind Render's proxy: trust one hop for the client IP (login limits) and https (secure cookies).
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 TRANSLATIONS = {
     "en": {
@@ -423,6 +467,15 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'new'
             );
 
+            CREATE TABLE IF NOT EXISTS login_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_failures_user ON login_failures(username, at);
+            CREATE INDEX IF NOT EXISTS idx_login_failures_ip ON login_failures(ip, at);
+
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -445,15 +498,31 @@ def init_db() -> None:
                 db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
         user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
+            password = DEFAULT_ADMIN_PASSWORD or initial_admin_password()
             db.execute(
                 "INSERT INTO users (username, password_hash, created_at, must_change_password) VALUES (?, ?, ?, ?)",
                 (
                     DEFAULT_ADMIN_USERNAME,
-                    generate_password_hash(DEFAULT_ADMIN_PASSWORD),
+                    generate_password_hash(password),
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    1,  # the first password is either the published default or one set in the server env
+                    1,  # the first password was set by the server, not the person: they choose their own
                 ),
             )
+
+
+def initial_admin_password() -> str:
+    """A random first password (instead of a published default), shown once in the server log and kept
+    in instance/initial_admin_password.txt until the owner logs in and replaces it."""
+    password = secrets.token_urlsafe(12)
+    path = DATA_DIR / "initial_admin_password.txt"
+    try:
+        path.write_text(password + "\n", encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        pass
+    logger.warning("First start: created user %r with password %s (also in %s). You must change it on first login.",
+                   DEFAULT_ADMIN_USERNAME, password, path)
+    return password
 
 
 def business_type() -> str:
@@ -547,6 +616,46 @@ def forbidden(_error: Exception) -> tuple[str, int]:
     return render_template("forbidden.html"), 403
 
 
+def csrf_token() -> str:
+    token = session.get("_csrf")
+    if not token:
+        token = session["_csrf"] = secrets.token_urlsafe(32)
+    return token
+
+
+app.jinja_env.globals["csrf_token"] = csrf_token
+
+
+@app.before_request
+def csrf_protect() -> None:
+    """Every form that changes something carries a per-session token, so another site cannot submit it
+    on behalf of a logged-in user (e.g. "delete all data")."""
+    if request.method in {"GET", "HEAD", "OPTIONS"} or not app.config.get("CSRF_ENABLED"):
+        return None
+    sent = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token") or ""
+    expected = session.get("_csrf") or ""
+    if not expected or not hmac.compare_digest(sent, expected):
+        logger.warning("CSRF check failed for %s %s from %s", request.method, request.path, request.remote_addr)
+        abort(400)
+    return None
+
+
+@app.errorhandler(400)
+def bad_request(_error: Exception) -> tuple[str, int]:
+    return render_template("error.html", code=400), 400
+
+
+@app.errorhandler(404)
+def not_found(_error: Exception) -> tuple[str, int]:
+    return render_template("error.html", code=404), 404
+
+
+@app.errorhandler(500)
+def server_error(error: Exception) -> tuple[str, int]:
+    logger.error("Unhandled error on %s %s", request.method, request.path, exc_info=getattr(error, "original_exception", error))
+    return render_template("error.html", code=500), 500
+
+
 PASSWORD_CHANGE_EXEMPT = {"change_password", "logout", "static", "set_language", "privacy", "free_analysis", "free_analysis_thanks"}
 
 
@@ -591,7 +700,17 @@ def inject_language_helpers() -> dict[str, Any]:
 @app.route("/language/<lang_code>", methods=["POST"])
 def set_language(lang_code: str) -> Response:
     session["lang"] = "ar" if lang_code == "ar" else "en"
-    return redirect(request.referrer or url_for("index"))
+    return redirect(same_site_referrer() or url_for("index"))
+
+
+def same_site_referrer() -> str | None:
+    """The page the language button was pressed on, but never another site."""
+    from urllib.parse import urlsplit
+
+    referrer = urlsplit(request.referrer or "")
+    if referrer.netloc and referrer.netloc != request.host:
+        return None
+    return safe_next(referrer.path + (f"?{referrer.query}" if referrer.query else ""))
 
 
 def parse_num(value: Any) -> float:
@@ -1205,6 +1324,7 @@ def demo_login() -> Response:
     if not user or user["role"] != "viewer":
         abort(404)
     session.clear()
+    session.permanent = True
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     session["lang"] = "ar"
@@ -1399,9 +1519,10 @@ def upload() -> str | Response:
         file.save(target)
         try:
             specs = detect_file(target, display_name=original, profiles_store=profiles)
-        except Exception as exc:  # unreadable or corrupt file
+        except Exception:  # unreadable or corrupt file
+            logger.exception("Could not read uploaded file %r (import %s)", original, token)
             shutil.rmtree(folder.parent, ignore_errors=True)
-            flash(f"مقدرتش أقرا {original}: {exc} / Could not read {original}.", "error")
+            flash(f"مقدرتش أقرا {original}. اتأكد إن الملف مش تالف وإنه Excel أو CSV. / Could not read {original}.", "error")
             return redirect(url_for("upload"))
         stored.append({"stored": target.name, "original": original, "specs": [spec.to_dict() for spec in specs]})
 
@@ -1493,7 +1614,8 @@ def upload_review(token: str) -> str | Response:
         if str(exc) == "period_required":
             flash("الملفات فيها مبيعات بس مش واضح هي عن كام يوم. اكتب مدة المبيعات بالأيام. / Enter how many days the sales cover.", "error")
         else:
-            flash(f"مقدرتش أحلل الملفات: {exc} / Could not analyze the files.", "error")
+            logger.exception("Analysis failed for import %s", token)
+            flash("مقدرتش أحلل الملفات. راجع الأعمدة واتأكد إن فيه كود أو اسم صنف وكمية. / Could not analyze the files.", "error")
         return redirect(url_for("upload_review", token=token))
 
     if allowed is not None:
@@ -2465,15 +2587,22 @@ def login() -> str | Response:
 
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
+    if login_locked(username, request.remote_addr or ""):
+        flash(f"محاولات دخول غلط كتير. استنى {LOGIN_LOCK_MINUTES} دقيقة وجرب تاني. / Too many failed attempts; try again later.", "error")
+        return redirect(url_for("login"))
     with get_db() as db:
         user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
 
     if not user or not check_password_hash(user["password_hash"], password):
+        record_login_failure(username, request.remote_addr or "")
         flash("اسم المستخدم أو كلمة المرور غير صحيحة.", "error")
         return redirect(url_for("login"))
 
+    clear_login_failures(username)
+    logger.info("Login: %s from %s", user["username"], request.remote_addr)
     lang = current_language()
     session.clear()
+    session.permanent = True
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     session["lang"] = lang
@@ -2482,6 +2611,27 @@ def login() -> str | Response:
         flash("أول مرة تدخل، أو كلمة المرور افتراضية: اختار كلمة مرور جديدة علشان تكمل. / Choose a new password to continue.", "error")
         return redirect(url_for("change_password"))
     return redirect(safe_next(request.args.get("next")) or url_for("index"))
+
+
+def login_locked(username: str, ip: str) -> bool:
+    since = (datetime.now() - timedelta(minutes=LOGIN_LOCK_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        by_user = db.execute("SELECT COUNT(*) FROM login_failures WHERE username = ? AND at >= ?", (username.casefold(), since)).fetchone()[0]
+        by_ip = db.execute("SELECT COUNT(*) FROM login_failures WHERE ip = ? AND at >= ?", (ip, since)).fetchone()[0]
+    return by_user >= LOGIN_MAX_FAILURES_PER_USER or by_ip >= LOGIN_MAX_FAILURES_PER_IP
+
+
+def record_login_failure(username: str, ip: str) -> None:
+    logger.warning("Failed login for %r from %s", username, ip)
+    now = datetime.now()
+    with get_db() as db:
+        db.execute("INSERT INTO login_failures (username, ip, at) VALUES (?, ?, ?)", (username.casefold(), ip, now.strftime("%Y-%m-%d %H:%M:%S")))
+        db.execute("DELETE FROM login_failures WHERE at < ?", ((now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),))
+
+
+def clear_login_failures(username: str) -> None:
+    with get_db() as db:
+        db.execute("DELETE FROM login_failures WHERE username = ?", (username.casefold(),))
 
 
 def safe_next(target: str | None) -> str | None:

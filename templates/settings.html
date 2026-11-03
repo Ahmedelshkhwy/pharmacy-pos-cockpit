@@ -10,6 +10,7 @@
 </section>
 
 <form class="panel form settings-group" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="action" value="apply_profile">
   <div class="wide">
     <h2>{% if ar %}نوع النشاط{% else %}Business type{% endif %}</h2>
@@ -28,6 +29,7 @@
 </form>
 
 <form method="post" id="settings-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="business_type" value="{{ settings.business_type }}">
   <input type="hidden" name="action" value="save">
   {% for group_key, group_labels in groups.items() %}
@@ -89,6 +91,7 @@
 </form>
 
 <form class="panel review-actions" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="action" value="reanalyze">
   <p class="helper-text">
     {% if ar %}أعد تحليل آخر رفع لكل فرع ({{ reanalyze_count }}) بالإعدادات المحفوظة، من الملفات الأصلية ومن غير ما ترفعها تاني.{% else %}Re-analyze the latest upload of each branch ({{ reanalyze_count }}) with the saved settings, from the archived files, without uploading again.{% endif %}
@@ -97,6 +100,7 @@
 </form>
 
 <form class="panel form" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="wide">
     <h2>{% if ar %}مساعد Claude لأسئلة البيانات (اختياري){% else %}Claude for data questions (optional){% endif %}</h2>
     <p class="helper-text">

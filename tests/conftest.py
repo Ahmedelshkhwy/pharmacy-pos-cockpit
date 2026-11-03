@@ -5,6 +5,9 @@ import os
 
 import pytest
 
+# A known first password for tests; real installs get a random one (see app.initial_admin_password).
+os.environ.setdefault("PHARMACY_ADMIN_PASSWORD", "admin123")
+
 
 @pytest.fixture(autouse=True)
 def clean_postgres():
@@ -24,5 +27,7 @@ def skip_forced_password_change():
     import app as appmod
 
     appmod.app.config["ENFORCE_PASSWORD_CHANGE"] = False
+    appmod.app.config["CSRF_ENABLED"] = False  # test clients post forms directly; tests/test_security.py turns it on
     yield
     appmod.app.config["ENFORCE_PASSWORD_CHANGE"] = True
+    appmod.app.config["CSRF_ENABLED"] = True

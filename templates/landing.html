@@ -158,6 +158,7 @@
           </ul>
         </div>
         <form class="lead-form" method="post" action="{{ url_for('free_analysis') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           {% with messages = get_flashed_messages(with_categories=true) %}
             {% for category, message in messages %}<p class="form-msg {{ category }}">{{ message }}</p>{% endfor %}
           {% endwith %}

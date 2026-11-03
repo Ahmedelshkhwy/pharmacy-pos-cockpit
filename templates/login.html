@@ -24,6 +24,7 @@
         </div>
       </div>
       <form class="language-form auth-language" method="post" action="{{ url_for('set_language', lang_code=next_lang) }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">{{ t("language_toggle") }}</button>
       </form>
 
@@ -38,6 +39,7 @@
       {% endwith %}
 
       <form method="post" class="auth-form">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>
           <span>{{ t("username") }}</span>
           <input name="username" autocomplete="username" required autofocus>

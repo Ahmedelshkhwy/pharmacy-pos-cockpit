@@ -73,10 +73,12 @@
       <div class="nav-footer">
       {% if user %}<p class="nav-user">{{ user.username }} · {{ roles[user.role][0 if lang == "ar" else 1].split(":")[0] }}</p>{% endif %}
       <form class="language-form" method="post" action="{{ url_for('set_language', lang_code=next_lang) }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">{{ t("language_toggle") }}</button>
       </form>
       {% if session.get("user_id") %}
       <form class="logout-form" method="post" action="{{ url_for('logout') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">{{ t("logout") }}</button>
       </form>
       {% endif %}
@@ -89,6 +91,7 @@
     <div class="demo-banner no-print">
       <span>{% if lang == "ar" %}دي نسخة تجريبية ببيانات وهمية لسلسلة من 4 فروع. عايز نفس التحليل على بيانات صيدليتك؟{% else %}This is a demo with fictional data for a 4-branch chain. Want this on your own pharmacy's data?{% endif %}</span>
       <form method="post" action="{{ url_for('logout') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="next" value="free-analysis">
         <button class="button primary" type="submit">{% if lang == "ar" %}اطلب تحليلك المجاني{% else %}Get a free analysis{% endif %}</button>
       </form>

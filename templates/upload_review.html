@@ -11,6 +11,7 @@
 </section>
 
 <form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <section class="panel form">
     <label>
       <span>{% if lang == "ar" %}اسم الفرع{% else %}Branch name{% endif %}</span>

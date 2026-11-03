@@ -19,6 +19,7 @@
 
 <section class="grid two danger-grid">
   <form class="panel form danger-panel" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="mode" value="branch">
     <div class="wide">
       <h2>مسح بيانات فرع محدد</h2>
@@ -45,6 +46,7 @@
   </form>
 
   <form class="panel form danger-panel" method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="mode" value="all">
     <div class="wide">
       <h2>فورمات كل بيانات الفروع</h2>

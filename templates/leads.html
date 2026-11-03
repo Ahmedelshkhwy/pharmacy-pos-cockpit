@@ -37,6 +37,7 @@
         <td>{{ lead.message }}</td>
         <td>
           <form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="lead_id" value="{{ lead.id }}">
             <select name="status" onchange="this.form.submit()" aria-label="{% if ar %}الحالة{% else %}Status{% endif %}">
               {% for key, label in status_labels.items() %}<option value="{{ key }}" {% if lead.status == key %}selected{% endif %}>{{ label }}</option>{% endfor %}

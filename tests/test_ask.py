@@ -86,7 +86,8 @@ def test_claude_failure_falls_back_to_builtin():
 
     fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(create=broken)))
     answer = ask.ask("أكتر صنف بيخسرني", ROWS, "ar", fake)
-    assert answer.source == "built-in" and answer.rows and "ConnectionError" in answer.note
+    assert answer.source == "built-in" and answer.rows and "Claude" in answer.note
+    assert "ConnectionError" not in answer.note  # internals go to the log, not to the user
 
 
 def test_ask_page_respects_branch_permissions(client):
