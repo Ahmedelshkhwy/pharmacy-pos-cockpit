@@ -7,11 +7,8 @@ instead of the values being added twice.
 """
 from __future__ import annotations
 
-import csv
 import json
-import math
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from datetime import date, datetime
@@ -33,8 +30,6 @@ DEFAULT_BRANCH = "Main"
 ABC_LIMITS = (0.80, 0.95)          # cumulative share of profit (or sales) for A and B
 XYZ_LIMITS = (0.5, 1.0)            # weekly coefficient of variation for X and Y
 
-STOCK_MEASURES = ("qoh", "batches", "stock_value", "stock_cost_value")
-SALES_MEASURES = ("qty_sold", "sales_value", "returns", "purchases")
 
 ITEM_COLUMNS = [
     "ref", "barcode", "name", "category", "supplier", "branch",

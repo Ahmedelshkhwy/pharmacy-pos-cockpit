@@ -10,6 +10,7 @@
 </section>
 
 <form class="panel form" method="post" enctype="multipart/form-data">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <label class="wide dropzone">
     <span>{% if lang == "ar" %}الملفات (واحد أو أكتر، لحد 10){% else %}Files (one or more, up to 10){% endif %}</span>
     <input type="file" name="files" multiple required accept="{{ extensions|join(',') }}">

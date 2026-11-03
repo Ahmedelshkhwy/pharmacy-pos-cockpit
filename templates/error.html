@@ -1,0 +1,14 @@
+{% extends "base.html" if session.get("user_id") else "_public_base.html" %}
+{% block content %}
+{% set ar = lang == "ar" %}
+{% set messages_by_code = {
+  400: ("الصفحة دي قديمة أو الطلب ناقص. ارجع للصفحة وحدّثها وجرب تاني.", "This page expired or the request was incomplete. Go back, refresh, and try again."),
+  404: ("الصفحة دي مش موجودة.", "This page does not exist."),
+  500: ("حصلت مشكلة عندنا واتسجلت علشان نصلحها. جرب تاني بعد شوية.", "Something went wrong on our side and it has been logged. Please try again shortly."),
+} %}
+<section class="panel error-panel">
+  <h1>{{ code }}</h1>
+  <p class="helper-text">{{ messages_by_code[code][0 if ar else 1] }}</p>
+  <a class="button primary" href="{{ url_for('index') }}">{% if ar %}الرئيسية{% else %}Home{% endif %}</a>
+</section>
+{% endblock %}

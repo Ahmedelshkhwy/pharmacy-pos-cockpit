@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import json
+import logging
 import os
 import re
 import secrets
 import shutil
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, abort, flash, g, redirect, render_template, request, send_file, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import actions as action_plans
@@ -50,8 +53,8 @@ BRANCH_TEMPLATE_PATH = BASE_DIR / "pharmacy_branch_upload_template.xlsx"
 
 MAX_UPLOAD_FILES = 10
 DEFAULT_ADMIN_USERNAME = os.environ.get("PHARMACY_ADMIN_USERNAME", "admin")
-KNOWN_DEFAULT_PASSWORD = "admin123"  # published in the README: whoever still uses it must change it
-DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", KNOWN_DEFAULT_PASSWORD)
+KNOWN_DEFAULT_PASSWORD = "admin123"  # old installs shipped with it: whoever still uses it must change it
+DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", "").strip()  # empty -> a random one is generated
 
 # Marketing / public site. All optional: the landing page works without them.
 WHATSAPP_NUMBER = re.sub(r"\D", "", os.environ.get("PHARMACY_WHATSAPP_NUMBER", ""))  # international, e.g. 201001234567
@@ -121,13 +124,54 @@ UPLOAD_EXTRA_COLUMNS = {
 }
 
 
+logging.basicConfig(level=os.environ.get("PHARMACY_LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("pharmacy")
+
+ON_RENDER = bool(os.environ.get("RENDER"))  # Render sets this on every service
+DEV_MODE = os.environ.get("PHARMACY_DEV", "").strip().lower() in {"1", "true", "yes"}
+LOGIN_LOCK_MINUTES = 15
+LOGIN_MAX_FAILURES_PER_USER = 5
+LOGIN_MAX_FAILURES_PER_IP = 20
+
+
+def load_secret_key() -> str:
+    """PHARMACY_SECRET_KEY, or a random key kept in instance/secret_key so sessions survive restarts.
+
+    Never a fixed fallback: anyone who knows a fixed key can forge a login session.
+    """
+    if os.environ.get("PHARMACY_SECRET_KEY"):
+        return os.environ["PHARMACY_SECRET_KEY"]
+    key_path = DATA_DIR / "secret_key"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(secrets.token_urlsafe(48))
+    except FileExistsError:
+        pass  # another worker created it first
+    for _ in range(50):
+        key = key_path.read_text().strip()
+        if key:
+            return key
+    raise RuntimeError(f"Could not read {key_path}")
+
+
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("PHARMACY_SECRET_KEY", "change-this-secret-key")
+app.config["SECRET_KEY"] = load_secret_key()
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
-app.config["TEMPLATES_AUTO_RELOAD"] = True
-app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
-app.jinja_env.auto_reload = True
 app.config["ENFORCE_PASSWORD_CHANGE"] = True
+app.config["CSRF_ENABLED"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+secure_cookies = os.environ.get("PHARMACY_SECURE_COOKIES", "").strip().lower()
+app.config["SESSION_COOKIE_SECURE"] = secure_cookies in {"1", "true", "yes"} if secure_cookies else ON_RENDER
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=12)
+if DEV_MODE:  # edit templates and static files without restarting; never in production
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+if ON_RENDER or os.environ.get("PHARMACY_BEHIND_PROXY"):
+    # Behind Render's proxy: trust one hop for the client IP (login limits) and https (secure cookies).
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 TRANSLATIONS = {
     "en": {
@@ -141,8 +185,6 @@ TRANSLATIONS = {
         "fast_moving": "Fast Moving",
         "slow_moving": "Slow Moving",
         "financial_panel": "Financial Panel",
-        "weekly_comparison": "Weekly Comparison",
-        "branch_upload": "Branch Upload",
         "smart_upload": "Upload files",
         "trends": "Trends over time",
         "ask": "Ask your data",
@@ -152,7 +194,6 @@ TRANSLATIONS = {
         "settings": "Analysis settings",
         "profit_loss": "Profit & Loss Drivers",
         "expiry_risk": "Expiry Risk",
-        "selling_below_cost": "Selling Below Cost",
         "imports": "Imports",
         "data_management": "Data Management",
         "password": "Password",
@@ -186,7 +227,6 @@ TRANSLATIONS = {
         "back_to_dashboard": "Back to dashboard",
         "back_to_reports": "Back to reports",
         "export_csv": "Export CSV",
-        "select_branch": "Select branch",
         "risk": "Risk",
         "branch": "Branch",
         "item": "Item",
@@ -198,9 +238,6 @@ TRANSLATIONS = {
         "lost_sales": "Lost sales",
         "frozen_capital": "Frozen capital",
         "high_risk": "High risk",
-        "current_week": "Current week",
-        "previous_week": "Previous week",
-        "uploads": "Uploads",
         "no_data": "No data.",
         "no_rows_report": "No rows in this report.",
     },
@@ -215,8 +252,6 @@ TRANSLATIONS = {
         "fast_moving": "أصناف سريعة",
         "slow_moving": "أصناف بطيئة",
         "financial_panel": "الماليات",
-        "weekly_comparison": "مقارنة أسبوعية",
-        "branch_upload": "رفع ملفات فرع",
         "smart_upload": "ارفع ملفات",
         "trends": "التطور مع الوقت",
         "ask": "اسأل بياناتك",
@@ -226,7 +261,6 @@ TRANSLATIONS = {
         "settings": "إعدادات التحليل",
         "profit_loss": "سر المكسب والخسارة",
         "expiry_risk": "خطر الصلاحية",
-        "selling_below_cost": "بيع بأقل من التكلفة",
         "imports": "سجل الرفع",
         "data_management": "إدارة البيانات",
         "password": "كلمة المرور",
@@ -260,7 +294,6 @@ TRANSLATIONS = {
         "back_to_dashboard": "ارجع للوحة",
         "back_to_reports": "ارجع للتقارير",
         "export_csv": "صدّر CSV",
-        "select_branch": "اختار الفرع",
         "risk": "الخطورة",
         "branch": "الفرع",
         "item": "الصنف",
@@ -272,9 +305,6 @@ TRANSLATIONS = {
         "lost_sales": "مبيعات ضايعة",
         "frozen_capital": "رأس مال متجمّد",
         "high_risk": "خطورة عالية",
-        "current_week": "الأسبوع الحالي",
-        "previous_week": "الأسبوع اللي فات",
-        "uploads": "مرات الرفع",
         "no_data": "مفيش بيانات.",
         "no_rows_report": "مفيش صفوف في التقرير ده.",
     },
@@ -299,7 +329,7 @@ def init_db() -> None:
                 analysis_period_days INTEGER NOT NULL DEFAULT 90,
                 total_items INTEGER NOT NULL,
                 dead_count INTEGER NOT NULL,
-                expiry_count INTEGER NOT NULL,
+                alert_count INTEGER NOT NULL,
                 slow_count INTEGER NOT NULL,
                 fast_count INTEGER NOT NULL
             );
@@ -409,6 +439,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_item_history_sku ON item_history(sku, branch);
             CREATE INDEX IF NOT EXISTS idx_item_history_snapshot ON item_history(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_snapshots_branch ON snapshots(branch, period_end);
+            CREATE INDEX IF NOT EXISTS idx_items_branch ON items(branch);
+            CREATE INDEX IF NOT EXISTS idx_items_sku ON items(sku, branch);
+            CREATE INDEX IF NOT EXISTS idx_items_upload ON items(upload_id);
+            CREATE INDEX IF NOT EXISTS idx_uploads_branch ON uploads(branch);
 
             CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -422,6 +456,15 @@ def init_db() -> None:
                 message TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'new'
             );
+
+            CREATE TABLE IF NOT EXISTS login_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_failures_user ON login_failures(username, at);
+            CREATE INDEX IF NOT EXISTS idx_login_failures_ip ON login_failures(ip, at);
 
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -440,20 +483,39 @@ def init_db() -> None:
             if column not in existing_user_columns:
                 db.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
         existing_upload_columns = db.table_columns("uploads")
+        if "expiry_count" in existing_upload_columns and "alert_count" not in existing_upload_columns:
+            # The column always held decision alerts (stockouts, overstock, expiry, below cost), not expiry only.
+            db.execute("ALTER TABLE uploads RENAME COLUMN expiry_count TO alert_count")
         for column, definition in UPLOAD_EXTRA_COLUMNS.items():
             if column not in existing_upload_columns:
                 db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
         user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
+            password = DEFAULT_ADMIN_PASSWORD or initial_admin_password()
             db.execute(
                 "INSERT INTO users (username, password_hash, created_at, must_change_password) VALUES (?, ?, ?, ?)",
                 (
                     DEFAULT_ADMIN_USERNAME,
-                    generate_password_hash(DEFAULT_ADMIN_PASSWORD),
+                    generate_password_hash(password),
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    1,  # the first password is either the published default or one set in the server env
+                    1,  # the first password was set by the server, not the person: they choose their own
                 ),
             )
+
+
+def initial_admin_password() -> str:
+    """A random first password (instead of a published default), shown once in the server log and kept
+    in instance/initial_admin_password.txt until the owner logs in and replaces it."""
+    password = secrets.token_urlsafe(12)
+    path = DATA_DIR / "initial_admin_password.txt"
+    try:
+        path.write_text(password + "\n", encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        pass
+    logger.warning("First start: created user %r with password %s (also in %s). You must change it on first login.",
+                   DEFAULT_ADMIN_USERNAME, password, path)
+    return password
 
 
 def business_type() -> str:
@@ -547,7 +609,47 @@ def forbidden(_error: Exception) -> tuple[str, int]:
     return render_template("forbidden.html"), 403
 
 
-PASSWORD_CHANGE_EXEMPT = {"change_password", "logout", "static", "set_language", "privacy", "free_analysis", "free_analysis_thanks"}
+def csrf_token() -> str:
+    token = session.get("_csrf")
+    if not token:
+        token = session["_csrf"] = secrets.token_urlsafe(32)
+    return token
+
+
+app.jinja_env.globals["csrf_token"] = csrf_token
+
+
+@app.before_request
+def csrf_protect() -> None:
+    """Every form that changes something carries a per-session token, so another site cannot submit it
+    on behalf of a logged-in user (e.g. "delete all data")."""
+    if request.method in {"GET", "HEAD", "OPTIONS"} or not app.config.get("CSRF_ENABLED"):
+        return None
+    sent = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token") or ""
+    expected = session.get("_csrf") or ""
+    if not expected or not hmac.compare_digest(sent, expected):
+        logger.warning("CSRF check failed for %s %s from %s", request.method, request.path, request.remote_addr)
+        abort(400)
+    return None
+
+
+@app.errorhandler(400)
+def bad_request(_error: Exception) -> tuple[str, int]:
+    return render_template("error.html", code=400), 400
+
+
+@app.errorhandler(404)
+def not_found(_error: Exception) -> tuple[str, int]:
+    return render_template("error.html", code=404), 404
+
+
+@app.errorhandler(500)
+def server_error(error: Exception) -> tuple[str, int]:
+    logger.error("Unhandled error on %s %s", request.method, request.path, exc_info=getattr(error, "original_exception", error))
+    return render_template("error.html", code=500), 500
+
+
+PASSWORD_CHANGE_EXEMPT = {"change_password", "logout", "static", "set_language", "privacy", "free_analysis", "free_analysis_thanks", "healthz"}
 
 
 @app.before_request
@@ -591,7 +693,17 @@ def inject_language_helpers() -> dict[str, Any]:
 @app.route("/language/<lang_code>", methods=["POST"])
 def set_language(lang_code: str) -> Response:
     session["lang"] = "ar" if lang_code == "ar" else "en"
-    return redirect(request.referrer or url_for("index"))
+    return redirect(same_site_referrer() or url_for("index"))
+
+
+def same_site_referrer() -> str | None:
+    """The page the language button was pressed on, but never another site."""
+    from urllib.parse import urlsplit
+
+    referrer = urlsplit(request.referrer or "")
+    if referrer.netloc and referrer.netloc != request.host:
+        return None
+    return safe_next(referrer.path + (f"?{referrer.query}" if referrer.query else ""))
 
 
 def parse_num(value: Any) -> float:
@@ -868,7 +980,7 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_toke
         upload_id = db.insert(
             """
             INSERT INTO uploads
-            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, expiry_count,
+            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, alert_count,
              slow_count, fast_count, coverage, quality_score, import_token)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -1205,6 +1317,7 @@ def demo_login() -> Response:
     if not user or user["role"] != "viewer":
         abort(404)
     session.clear()
+    session.permanent = True
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     session["lang"] = "ar"
@@ -1383,9 +1496,11 @@ def upload() -> str | Response:
         flash(f"أقصى عدد {MAX_UPLOAD_FILES} ملفات في المرة. / Up to {MAX_UPLOAD_FILES} files at once.", "error")
         return redirect(url_for("upload"))
 
+    purge_abandoned_imports()
     token = secrets.token_hex(8)
     folder = IMPORTS_DIR / token / "files"
     folder.mkdir(parents=True)
+    logger.info("Upload %s by %s: %d file(s)", token, session.get("username"), len(files))
     profiles = load_mapping_profiles()
     stored = []
     for index, file in enumerate(files):
@@ -1399,9 +1514,10 @@ def upload() -> str | Response:
         file.save(target)
         try:
             specs = detect_file(target, display_name=original, profiles_store=profiles)
-        except Exception as exc:  # unreadable or corrupt file
+        except Exception:  # unreadable or corrupt file
+            logger.exception("Could not read uploaded file %r (import %s)", original, token)
             shutil.rmtree(folder.parent, ignore_errors=True)
-            flash(f"مقدرتش أقرا {original}: {exc} / Could not read {original}.", "error")
+            flash(f"مقدرتش أقرا {original}. اتأكد إن الملف مش تالف وإنه Excel أو CSV. / Could not read {original}.", "error")
             return redirect(url_for("upload"))
         stored.append({"stored": target.name, "original": original, "specs": [spec.to_dict() for spec in specs]})
 
@@ -1415,6 +1531,28 @@ def upload() -> str | Response:
         },
     )
     return redirect(url_for("upload_review", token=token))
+
+
+ABANDONED_IMPORT_HOURS = 48
+
+
+def purge_abandoned_imports(max_age_hours: int = ABANDONED_IMPORT_HOURS) -> int:
+    """Delete uploads that were never analyzed (closed tab, failed review) once they are old.
+    Finished imports are kept: their files are what "Re-analyze" runs on."""
+    if not IMPORTS_DIR.exists():
+        return 0
+    with get_db() as db:
+        finished = {row["token"] for row in db.execute("SELECT token FROM import_runs")}
+    cutoff = datetime.now().timestamp() - max_age_hours * 3600
+    removed = 0
+    for folder in IMPORTS_DIR.iterdir():
+        if folder.is_dir() and TOKEN_PATTERN.fullmatch(folder.name) and folder.name not in finished and not (folder / "result.json").exists():
+            if folder.stat().st_mtime < cutoff:
+                shutil.rmtree(folder, ignore_errors=True)
+                removed += 1
+    if removed:
+        logger.info("Removed %d abandoned upload(s)", removed)
+    return removed
 
 
 def upload_branch_choices() -> list[str]:
@@ -1493,18 +1631,22 @@ def upload_review(token: str) -> str | Response:
         if str(exc) == "period_required":
             flash("الملفات فيها مبيعات بس مش واضح هي عن كام يوم. اكتب مدة المبيعات بالأيام. / Enter how many days the sales cover.", "error")
         else:
-            flash(f"مقدرتش أحلل الملفات: {exc} / Could not analyze the files.", "error")
+            logger.exception("Analysis failed for import %s", token)
+            flash("مقدرتش أحلل الملفات. راجع الأعمدة واتأكد إن فيه كود أو اسم صنف وكمية. / Could not analyze the files.", "error")
         return redirect(url_for("upload_review", token=token))
 
     if allowed is not None:
         outside = sorted({branch_result.branch for branch_result in result.branches} - set(allowed))
         if outside:
+            for branch_result in result.branches:  # nothing was imported: drop the analysis it just wrote
+                shutil.rmtree(branch_result.output_dir, ignore_errors=True)
             flash(f"مسموح لك ترفع لفروعك بس. الملف فيه: {', '.join(outside)}. / You can only upload your own branches.", "error")
             return redirect(url_for("upload_review", token=token))
     for _path, spec in tables:
         save_mapping_profile(spec)
     for branch_result in result.branches:
         import_pos_analysis_to_db(branch_result.output_dir, import_token=token)
+    logger.info("Import %s done: %s (quality %s)", token, ", ".join(f"{b.branch}={b.item_count}" for b in result.branches), result.quality.get("score"))
 
     save_import_result(
         token,
@@ -2158,7 +2300,8 @@ def latest_import_tokens() -> list[str]:
     """Imports behind each branch's current data (legacy imports have no token and cannot be re-run)."""
     with get_db() as db:
         rows = db.execute("SELECT DISTINCT u.import_token FROM uploads u JOIN items i ON i.upload_id = u.id WHERE u.import_token != ''").fetchall()
-    return [row["import_token"] for row in rows]
+    # Only imports whose original files are still on disk can be re-run (a redeploy without a disk loses them).
+    return [row["import_token"] for row in rows if (IMPORTS_DIR / row["import_token"] / "draft.json").exists()]
 
 
 def reanalyze_import(token: str, settings: AnalysisSettings) -> int:
@@ -2455,6 +2598,18 @@ def export(category: str) -> Response:
     )
 
 
+@app.route("/healthz")
+def healthz() -> tuple[Response, int]:
+    """For the hosting platform: 200 when the app can reach its database."""
+    try:
+        with get_db() as db:
+            db.execute("SELECT 1").fetchone()
+        return Response("ok", mimetype="text/plain"), 200
+    except Exception:
+        logger.exception("Health check failed")
+        return Response("database unavailable", mimetype="text/plain"), 503
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login() -> str | Response:
     if session.get("user_id"):
@@ -2465,15 +2620,22 @@ def login() -> str | Response:
 
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
+    if login_locked(username, request.remote_addr or ""):
+        flash(f"محاولات دخول غلط كتير. استنى {LOGIN_LOCK_MINUTES} دقيقة وجرب تاني. / Too many failed attempts; try again later.", "error")
+        return redirect(url_for("login"))
     with get_db() as db:
         user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
 
     if not user or not check_password_hash(user["password_hash"], password):
+        record_login_failure(username, request.remote_addr or "")
         flash("اسم المستخدم أو كلمة المرور غير صحيحة.", "error")
         return redirect(url_for("login"))
 
+    clear_login_failures(username)
+    logger.info("Login: %s from %s", user["username"], request.remote_addr)
     lang = current_language()
     session.clear()
+    session.permanent = True
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     session["lang"] = lang
@@ -2482,6 +2644,27 @@ def login() -> str | Response:
         flash("أول مرة تدخل، أو كلمة المرور افتراضية: اختار كلمة مرور جديدة علشان تكمل. / Choose a new password to continue.", "error")
         return redirect(url_for("change_password"))
     return redirect(safe_next(request.args.get("next")) or url_for("index"))
+
+
+def login_locked(username: str, ip: str) -> bool:
+    since = (datetime.now() - timedelta(minutes=LOGIN_LOCK_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        by_user = db.execute("SELECT COUNT(*) FROM login_failures WHERE username = ? AND at >= ?", (username.casefold(), since)).fetchone()[0]
+        by_ip = db.execute("SELECT COUNT(*) FROM login_failures WHERE ip = ? AND at >= ?", (ip, since)).fetchone()[0]
+    return by_user >= LOGIN_MAX_FAILURES_PER_USER or by_ip >= LOGIN_MAX_FAILURES_PER_IP
+
+
+def record_login_failure(username: str, ip: str) -> None:
+    logger.warning("Failed login for %r from %s", username, ip)
+    now = datetime.now()
+    with get_db() as db:
+        db.execute("INSERT INTO login_failures (username, ip, at) VALUES (?, ?, ?)", (username.casefold(), ip, now.strftime("%Y-%m-%d %H:%M:%S")))
+        db.execute("DELETE FROM login_failures WHERE at < ?", ((now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),))
+
+
+def clear_login_failures(username: str) -> None:
+    with get_db() as db:
+        db.execute("DELETE FROM login_failures WHERE username = ?", (username.casefold(),))
 
 
 def safe_next(target: str | None) -> str | None:

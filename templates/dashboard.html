@@ -144,7 +144,7 @@
         <td>{{ upload.analysis_period_days or 90 }}d</td>
         <td>{{ upload.total_items }}</td>
         <td>{{ upload.dead_count }}</td>
-        <td>{{ upload.expiry_count }}</td>
+        <td>{{ upload.alert_count }}</td>
       </tr>
       {% else %}
       <tr><td colspan="7" class="empty">{% if lang == "ar" %}مفيش بيانات POS مرفوعة لسه.{% else %}No POS data imported yet.{% endif %}</td></tr>

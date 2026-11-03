@@ -10,11 +10,14 @@ current user may see:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from smart_import import ARABIC_DIGITS, normalize_text
+
+logger = logging.getLogger("pharmacy.ask")
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
@@ -355,9 +358,10 @@ def ask(question: str, rows: list[dict[str, Any]], lang: str = "ar", client: Any
     if client is not None:
         try:
             return answer_with_claude(question, rows, lang, client)
-        except Exception as exc:  # network, auth, refusal, rate limit: the built-in answer still works
+        except Exception:  # network, auth, refusal, rate limit: the built-in answer still works
+            logger.exception("Claude answer failed; using the built-in engine")
             answer = answer_builtin(question, rows, lang)
-            answer.note = ("مساعد Claude مش متاح دلوقتي، فدي إجابة المحرك الداخلي." if lang == "ar" else "Claude is unavailable right now; this is the built-in answer.") + f" ({type(exc).__name__})"
+            answer.note = "مساعد Claude مش متاح دلوقتي، فدي إجابة المحرك الداخلي." if lang == "ar" else "Claude is unavailable right now; this is the built-in answer."
             return answer
     return answer_builtin(question, rows, lang)
 
