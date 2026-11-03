@@ -185,8 +185,6 @@ TRANSLATIONS = {
         "fast_moving": "Fast Moving",
         "slow_moving": "Slow Moving",
         "financial_panel": "Financial Panel",
-        "weekly_comparison": "Weekly Comparison",
-        "branch_upload": "Branch Upload",
         "smart_upload": "Upload files",
         "trends": "Trends over time",
         "ask": "Ask your data",
@@ -196,7 +194,6 @@ TRANSLATIONS = {
         "settings": "Analysis settings",
         "profit_loss": "Profit & Loss Drivers",
         "expiry_risk": "Expiry Risk",
-        "selling_below_cost": "Selling Below Cost",
         "imports": "Imports",
         "data_management": "Data Management",
         "password": "Password",
@@ -230,7 +227,6 @@ TRANSLATIONS = {
         "back_to_dashboard": "Back to dashboard",
         "back_to_reports": "Back to reports",
         "export_csv": "Export CSV",
-        "select_branch": "Select branch",
         "risk": "Risk",
         "branch": "Branch",
         "item": "Item",
@@ -242,9 +238,6 @@ TRANSLATIONS = {
         "lost_sales": "Lost sales",
         "frozen_capital": "Frozen capital",
         "high_risk": "High risk",
-        "current_week": "Current week",
-        "previous_week": "Previous week",
-        "uploads": "Uploads",
         "no_data": "No data.",
         "no_rows_report": "No rows in this report.",
     },
@@ -259,8 +252,6 @@ TRANSLATIONS = {
         "fast_moving": "أصناف سريعة",
         "slow_moving": "أصناف بطيئة",
         "financial_panel": "الماليات",
-        "weekly_comparison": "مقارنة أسبوعية",
-        "branch_upload": "رفع ملفات فرع",
         "smart_upload": "ارفع ملفات",
         "trends": "التطور مع الوقت",
         "ask": "اسأل بياناتك",
@@ -270,7 +261,6 @@ TRANSLATIONS = {
         "settings": "إعدادات التحليل",
         "profit_loss": "سر المكسب والخسارة",
         "expiry_risk": "خطر الصلاحية",
-        "selling_below_cost": "بيع بأقل من التكلفة",
         "imports": "سجل الرفع",
         "data_management": "إدارة البيانات",
         "password": "كلمة المرور",
@@ -304,7 +294,6 @@ TRANSLATIONS = {
         "back_to_dashboard": "ارجع للوحة",
         "back_to_reports": "ارجع للتقارير",
         "export_csv": "صدّر CSV",
-        "select_branch": "اختار الفرع",
         "risk": "الخطورة",
         "branch": "الفرع",
         "item": "الصنف",
@@ -316,9 +305,6 @@ TRANSLATIONS = {
         "lost_sales": "مبيعات ضايعة",
         "frozen_capital": "رأس مال متجمّد",
         "high_risk": "خطورة عالية",
-        "current_week": "الأسبوع الحالي",
-        "previous_week": "الأسبوع اللي فات",
-        "uploads": "مرات الرفع",
         "no_data": "مفيش بيانات.",
         "no_rows_report": "مفيش صفوف في التقرير ده.",
     },
@@ -343,7 +329,7 @@ def init_db() -> None:
                 analysis_period_days INTEGER NOT NULL DEFAULT 90,
                 total_items INTEGER NOT NULL,
                 dead_count INTEGER NOT NULL,
-                expiry_count INTEGER NOT NULL,
+                alert_count INTEGER NOT NULL,
                 slow_count INTEGER NOT NULL,
                 fast_count INTEGER NOT NULL
             );
@@ -497,6 +483,9 @@ def init_db() -> None:
             if column not in existing_user_columns:
                 db.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
         existing_upload_columns = db.table_columns("uploads")
+        if "expiry_count" in existing_upload_columns and "alert_count" not in existing_upload_columns:
+            # The column always held decision alerts (stockouts, overstock, expiry, below cost), not expiry only.
+            db.execute("ALTER TABLE uploads RENAME COLUMN expiry_count TO alert_count")
         for column, definition in UPLOAD_EXTRA_COLUMNS.items():
             if column not in existing_upload_columns:
                 db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
@@ -991,7 +980,7 @@ def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_toke
         upload_id = db.insert(
             """
             INSERT INTO uploads
-            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, expiry_count,
+            (branch, week_date, filename, uploaded_at, analysis_period_days, total_items, dead_count, alert_count,
              slow_count, fast_count, coverage, quality_score, import_token)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,

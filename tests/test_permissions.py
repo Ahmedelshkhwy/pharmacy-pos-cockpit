@@ -1,7 +1,6 @@
 """Roles: a branch manager or viewer must never see or change another branch."""
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 

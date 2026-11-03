@@ -19,6 +19,8 @@ sys.path.insert(0, str(ROOT))
 TABLES = ["users", "app_settings", "mapping_profiles", "import_runs", "uploads", "items", "snapshots", "item_history"]
 SERIAL_TABLES = ["users", "uploads", "items", "snapshots"]
 DATA_TABLES = ["uploads", "items"]
+# Columns renamed since older versions: source name -> current name.
+COLUMN_RENAMES = {"uploads": {"expiry_count": "alert_count"}}
 
 
 def migrate(sqlite_path: Path, database_url: str) -> dict[str, int]:
@@ -42,10 +44,14 @@ def migrate(sqlite_path: Path, database_url: str) -> dict[str, int]:
         for table in TABLES:
             if table not in source_tables:
                 continue
-            columns = sorted(set(row[1] for row in source.execute(f"PRAGMA table_info({table})")) & target.table_columns(table))
-            rows = [tuple(row[column] for column in columns) for row in source.execute(f"SELECT {', '.join(columns)} FROM {table}")]
+            renames = COLUMN_RENAMES.get(table, {})
+            source_columns = {row[1] for row in source.execute(f"PRAGMA table_info({table})")}
+            target_columns = target.table_columns(table)
+            pairs = sorted((column, renames.get(column, column)) for column in source_columns if renames.get(column, column) in target_columns)
+            rows = [tuple(row[source] for source, _target in pairs) for row in source.execute(f"SELECT {', '.join(source for source, _ in pairs)} FROM {table}")]
             if rows:
-                target.executemany(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})", rows)
+                names = [target_name for _source, target_name in pairs]
+                target.executemany(f"INSERT INTO {table} ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})", rows)
             copied[table] = len(rows)
         for table in SERIAL_TABLES:
             target.execute(f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), COALESCE((SELECT MAX(id) FROM {table}), 0) + 1, false)")

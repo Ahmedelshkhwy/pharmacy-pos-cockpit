@@ -20,7 +20,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterator
 
 try:
     from python_calamine import CalamineWorkbook
@@ -84,7 +84,6 @@ NUMERIC_FIELDS = {
 }
 DATE_FIELDS = {"expiry", "date"}
 CODE_FIELDS = {"ref", "barcode", "invoice", "batch"}
-TEXT_FIELDS = {"name", "category", "supplier", "branch"}
 IDENTITY_FIELDS = ("ref", "barcode", "name")
 
 SYNONYMS: dict[str, list[str]] = {
@@ -489,9 +488,6 @@ class TableSpec:
     signature: str = ""
     profile_applied: bool = False
 
-    def mapping(self) -> dict[str, int]:
-        return {col.field: col.index for col in self.columns if col.field and col.field != "_ignore"}
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -528,11 +524,11 @@ def row_header_score(row: list[Any]) -> tuple[float, int]:
 
 
 def find_header_row(rows: list[list[Any]]) -> int:
-    best_index, best_score, best_strong = -1, 0.0, 0
+    best_index, best_score = -1, 0.0
     for index, row in enumerate(rows[:HEADER_SCAN_ROWS]):
         score, strong = row_header_score(row)
         if strong >= 2 and score > best_score:
-            best_index, best_score, best_strong = index, score, strong
+            best_index, best_score = index, score
     return best_index
 
 
@@ -951,19 +947,7 @@ def profile_entry(spec: TableSpec) -> dict[str, Any]:
     }
 
 
-def save_profile(path: Path, spec: TableSpec) -> None:
-    profiles = load_profiles(path)
-    profiles[spec.signature] = profile_entry(spec)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(profiles, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def field_choices(lang: str = "ar") -> list[tuple[str, str]]:
     position = 0 if lang == "ar" else 1
     return [("", "—")] + [(key, labels[position]) for key, labels in FIELD_LABELS.items() if key not in {"qty_generic", "value_generic"}]
 
-
-def iter_all_records(paths_specs: Iterable[tuple[Path, TableSpec]], quality: Quality) -> Iterator[tuple[TableSpec, dict[str, Any]]]:
-    for path, spec in paths_specs:
-        for record in iter_records(path, spec, quality):
-            yield spec, record

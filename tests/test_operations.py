@@ -95,3 +95,27 @@ def test_backup_copies_every_table_and_can_be_opened(client, tmp_path):
         assert copy.execute("SELECT COUNT(*) FROM items WHERE branch = 'Zayed'").fetchone()[0] == 80
     with appmod.get_db() as db:
         assert db.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 240  # the source is untouched
+
+
+def test_old_databases_get_the_alert_column_renamed(tmp_path, monkeypatch):
+    import app as appmod
+
+    if appmod.DATABASE_URL:
+        return  # the rename runs the same SQL on PostgreSQL; this test builds an old SQLite file
+    old = tmp_path / "old.db"
+    with sqlite3.connect(old) as db:
+        db.execute(
+            "CREATE TABLE uploads (id INTEGER PRIMARY KEY AUTOINCREMENT, branch TEXT NOT NULL, week_date TEXT NOT NULL, filename TEXT NOT NULL, "
+            "uploaded_at TEXT NOT NULL, total_items INTEGER NOT NULL, dead_count INTEGER NOT NULL, expiry_count INTEGER NOT NULL, "
+            "slow_count INTEGER NOT NULL, fast_count INTEGER NOT NULL)"
+        )
+        db.execute("INSERT INTO uploads (branch, week_date, filename, uploaded_at, total_items, dead_count, expiry_count, slow_count, fast_count) "
+                   "VALUES ('Maadi', '2026-10-30', 'a.xlsx', '2026-10-31 09:00:00', 80, 16, 23, 22, 33)")
+    monkeypatch.setattr(appmod, "DB_PATH", old)
+    monkeypatch.setattr(appmod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(appmod, "UPLOAD_DIR", tmp_path / "uploads")
+    appmod.init_db()
+    with sqlite3.connect(old) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(uploads)")}
+        assert "alert_count" in columns and "expiry_count" not in columns
+        assert db.execute("SELECT alert_count FROM uploads").fetchone()[0] == 23  # value kept

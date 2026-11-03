@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 
 GAP_PROBABILITY = 0.01           # a zero-sales gap this unlikely means the item was unavailable
 GAP_THRESHOLD = -math.log(GAP_PROBABILITY)
@@ -24,7 +24,6 @@ MIN_AVAILABLE_SHARE = 0.2
 TREND_WINDOW_DAYS = 30
 TREND_MIN_UNITS = 10
 TREND_UP, TREND_DOWN = 1.25, 0.8
-DEFAULT_HALF_LIFE_DAYS = 30
 
 
 @dataclass
