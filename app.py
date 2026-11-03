@@ -453,6 +453,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_item_history_sku ON item_history(sku, branch);
             CREATE INDEX IF NOT EXISTS idx_item_history_snapshot ON item_history(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_snapshots_branch ON snapshots(branch, period_end);
+            CREATE INDEX IF NOT EXISTS idx_items_branch ON items(branch);
+            CREATE INDEX IF NOT EXISTS idx_items_sku ON items(sku, branch);
+            CREATE INDEX IF NOT EXISTS idx_items_upload ON items(upload_id);
+            CREATE INDEX IF NOT EXISTS idx_uploads_branch ON uploads(branch);
 
             CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -656,7 +660,7 @@ def server_error(error: Exception) -> tuple[str, int]:
     return render_template("error.html", code=500), 500
 
 
-PASSWORD_CHANGE_EXEMPT = {"change_password", "logout", "static", "set_language", "privacy", "free_analysis", "free_analysis_thanks"}
+PASSWORD_CHANGE_EXEMPT = {"change_password", "logout", "static", "set_language", "privacy", "free_analysis", "free_analysis_thanks", "healthz"}
 
 
 @app.before_request
@@ -1503,9 +1507,11 @@ def upload() -> str | Response:
         flash(f"أقصى عدد {MAX_UPLOAD_FILES} ملفات في المرة. / Up to {MAX_UPLOAD_FILES} files at once.", "error")
         return redirect(url_for("upload"))
 
+    purge_abandoned_imports()
     token = secrets.token_hex(8)
     folder = IMPORTS_DIR / token / "files"
     folder.mkdir(parents=True)
+    logger.info("Upload %s by %s: %d file(s)", token, session.get("username"), len(files))
     profiles = load_mapping_profiles()
     stored = []
     for index, file in enumerate(files):
@@ -1536,6 +1542,28 @@ def upload() -> str | Response:
         },
     )
     return redirect(url_for("upload_review", token=token))
+
+
+ABANDONED_IMPORT_HOURS = 48
+
+
+def purge_abandoned_imports(max_age_hours: int = ABANDONED_IMPORT_HOURS) -> int:
+    """Delete uploads that were never analyzed (closed tab, failed review) once they are old.
+    Finished imports are kept: their files are what "Re-analyze" runs on."""
+    if not IMPORTS_DIR.exists():
+        return 0
+    with get_db() as db:
+        finished = {row["token"] for row in db.execute("SELECT token FROM import_runs")}
+    cutoff = datetime.now().timestamp() - max_age_hours * 3600
+    removed = 0
+    for folder in IMPORTS_DIR.iterdir():
+        if folder.is_dir() and TOKEN_PATTERN.fullmatch(folder.name) and folder.name not in finished and not (folder / "result.json").exists():
+            if folder.stat().st_mtime < cutoff:
+                shutil.rmtree(folder, ignore_errors=True)
+                removed += 1
+    if removed:
+        logger.info("Removed %d abandoned upload(s)", removed)
+    return removed
 
 
 def upload_branch_choices() -> list[str]:
@@ -1621,12 +1649,15 @@ def upload_review(token: str) -> str | Response:
     if allowed is not None:
         outside = sorted({branch_result.branch for branch_result in result.branches} - set(allowed))
         if outside:
+            for branch_result in result.branches:  # nothing was imported: drop the analysis it just wrote
+                shutil.rmtree(branch_result.output_dir, ignore_errors=True)
             flash(f"مسموح لك ترفع لفروعك بس. الملف فيه: {', '.join(outside)}. / You can only upload your own branches.", "error")
             return redirect(url_for("upload_review", token=token))
     for _path, spec in tables:
         save_mapping_profile(spec)
     for branch_result in result.branches:
         import_pos_analysis_to_db(branch_result.output_dir, import_token=token)
+    logger.info("Import %s done: %s (quality %s)", token, ", ".join(f"{b.branch}={b.item_count}" for b in result.branches), result.quality.get("score"))
 
     save_import_result(
         token,
@@ -2280,7 +2311,8 @@ def latest_import_tokens() -> list[str]:
     """Imports behind each branch's current data (legacy imports have no token and cannot be re-run)."""
     with get_db() as db:
         rows = db.execute("SELECT DISTINCT u.import_token FROM uploads u JOIN items i ON i.upload_id = u.id WHERE u.import_token != ''").fetchall()
-    return [row["import_token"] for row in rows]
+    # Only imports whose original files are still on disk can be re-run (a redeploy without a disk loses them).
+    return [row["import_token"] for row in rows if (IMPORTS_DIR / row["import_token"] / "draft.json").exists()]
 
 
 def reanalyze_import(token: str, settings: AnalysisSettings) -> int:
@@ -2575,6 +2607,18 @@ def export(category: str) -> Response:
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename=pharmacy_{category}.csv"},
     )
+
+
+@app.route("/healthz")
+def healthz() -> tuple[Response, int]:
+    """For the hosting platform: 200 when the app can reach its database."""
+    try:
+        with get_db() as db:
+            db.execute("SELECT 1").fetchone()
+        return Response("ok", mimetype="text/plain"), 200
+    except Exception:
+        logger.exception("Health check failed")
+        return Response("database unavailable", mimetype="text/plain"), 503
 
 
 @app.route("/login", methods=["GET", "POST"])
