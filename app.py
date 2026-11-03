@@ -58,7 +58,24 @@ KNOWN_DEFAULT_PASSWORD = "admin123"  # old installs shipped with it: whoever sti
 DEFAULT_ADMIN_PASSWORD = os.environ.get("PHARMACY_ADMIN_PASSWORD", "").strip()  # empty -> a random one is generated
 
 # Marketing / public site. All optional: the landing page works without them.
-WHATSAPP_NUMBER = re.sub(r"\D", "", os.environ.get("PHARMACY_WHATSAPP_NUMBER", ""))  # international, e.g. 201001234567
+def international_phone(phone: str) -> str:
+    """Digits for wa.me: local Egyptian (01xxxxxxxxx) and Saudi (05xxxxxxxx) numbers get their country code."""
+    digits = re.sub(r"\D", "", (phone or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")))
+    if digits.startswith("00"):
+        return digits[2:]
+    if len(digits) == 11 and digits.startswith("01"):
+        return "20" + digits[1:]  # Egypt mobile
+    if len(digits) == 10 and digits.startswith("05"):
+        return "966" + digits[1:]  # Saudi mobile
+    if len(digits) == 10 and digits.startswith("1"):
+        return "20" + digits
+    if len(digits) == 9 and digits.startswith("5"):
+        return "966" + digits
+    return digits
+
+
+# The company's WhatsApp: international (201001234567, 966501234567) or local Egyptian/Saudi format.
+WHATSAPP_NUMBER = international_phone(os.environ.get("PHARMACY_WHATSAPP_NUMBER", ""))
 CONTACT_EMAIL = os.environ.get("PHARMACY_CONTACT_EMAIL", "").strip()
 PUBLIC_URL = os.environ.get("PHARMACY_PUBLIC_URL", "").strip().rstrip("/")
 DEMO_MODE = os.environ.get("PHARMACY_DEMO_MODE", "").strip().lower() in {"1", "true", "yes"}
@@ -1455,9 +1472,7 @@ def leads_page() -> str | Response:
     with platform_db() as db:
         leads = [dict(row) for row in db.execute("SELECT * FROM leads ORDER BY id DESC")]
     for lead in leads:
-        number = re.sub(r"\D", "", lead["phone"].translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
-        if number.startswith("0"):
-            number = "2" + number  # Egyptian local format 01xxxxxxxxx -> 201xxxxxxxxx
+        number = international_phone(lead["phone"])
         lead["wa"] = f"https://wa.me/{number}" if number else ""
     return render_template("leads.html", leads=leads, status_labels=STATUS_LABELS)
 

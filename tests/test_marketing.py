@@ -112,3 +112,23 @@ def test_demo_data_and_one_click_demo(appmod, monkeypatch, tmp_path):
     assert "فلوس بتضيع أو متجمدة" in report and "أهم 10 أصناف" in report
     actions = client.get("/actions").data.decode()
     assert "اتعمل بمنصة الصيدليات" in actions  # shared summaries carry the signature
+
+
+def test_phone_numbers_from_egypt_and_saudi_get_country_codes():
+    import app as appmod
+
+    cases = {
+        "01001234567": "201001234567",       # Egypt, local
+        "0100 123 4567": "201001234567",
+        "٠١٠٠١٢٣٤٥٦٧": "201001234567",       # Arabic digits
+        "+20 100 123 4567": "201001234567",
+        "0567796790": "966567796790",        # Saudi, local
+        "056 779 6790": "966567796790",
+        "567796790": "966567796790",
+        "+966 56 779 6790": "966567796790",
+        "00966567796790": "966567796790",
+        "966567796790": "966567796790",
+        "": "",
+    }
+    for raw, expected in cases.items():
+        assert appmod.international_phone(raw) == expected, raw
