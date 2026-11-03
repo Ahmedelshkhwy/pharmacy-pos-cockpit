@@ -39,9 +39,23 @@ def test_migrate_sqlite_install_into_postgres(tmp_path, monkeypatch):
     path = ROOT / "sample_data" / "D_chain_multi_branch.xlsx"
     response = client.post("/upload", data={"files": [(path.open("rb"), path.name)]}, content_type="multipart/form-data")
     submit_review(client, response.headers["Location"])
+    # A second organization that signed up, with its own data in its own file.
+    other = appmod.app.test_client()
+    other.post("/signup", data={"org_name": "Other Shop", "business_type": "general", "username": "other",
+                                "password": "other-pass-1", "confirm_password": "other-pass-1"})
+    response = other.post("/upload", data={"files": [(path.open("rb"), path.name)]}, content_type="multipart/form-data")
+    submit_review(other, response.headers["Location"])
+    with appmod.platform_db() as db:
+        other_org = db.execute("SELECT org_id FROM users WHERE username = 'other'").fetchone()[0]
 
     copied = migrate(data / "pharmacy.db", url)
-    assert copied["items"] == 240 and copied["snapshots"] == 3 and copied["users"] == 1
+    assert copied["items"] == 240 and copied["snapshots"] == 3 and copied["users"] == 2
+    assert copied[f"org{other_org}.items"] == 240 and copied["organizations"] == 2
+    with appmod.get_db(other_org) as db:
+        assert db.is_postgres and db.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 240
+    signed_in = appmod.app.test_client()
+    assert signed_in.post("/login", data={"username": "other", "password": "other-pass-1"}).status_code == 302
+    assert "Other Shop" in signed_in.get("/").data.decode()
     assert appmod.DATABASE_URL == url
     with appmod.get_db() as db:
         assert db.is_postgres

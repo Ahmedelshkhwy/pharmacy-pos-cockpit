@@ -66,12 +66,15 @@
         <a href="{{ url_for('analysis_settings') }}">{{ t("settings") }}</a>
         <a href="{{ url_for('users_page') }}">{{ t("users") }}</a>
         <a href="{{ url_for('data_management') }}">{{ t("data_management") }}</a>
+        {% endif %}
+        {% if can("platform") %}
+        <a href="{{ url_for('platform_page') }}">{{ "الجهات المشتركة" if lang == "ar" else "Organizations" }}</a>
         <a href="{{ url_for('leads_page') }}">{{ "طلبات التحليل المجاني" if lang == "ar" else "Free analysis requests" }}</a>
         {% endif %}
         <a href="{{ url_for('change_password') }}">{{ t("password") }}</a>
       </div>
       <div class="nav-footer">
-      {% if user %}<p class="nav-user">{{ user.username }} · {{ roles[user.role][0 if lang == "ar" else 1].split(":")[0] }}</p>{% endif %}
+      {% if user %}<p class="nav-user">{% if user.org_name %}{{ user.org_name }} · {% endif %}{{ user.username }} · {{ roles[user.role][0 if lang == "ar" else 1].split(":")[0] }}</p>{% endif %}
       <form class="language-form" method="post" action="{{ url_for('set_language', lang_code=next_lang) }}">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit">{{ t("language_toggle") }}</button>

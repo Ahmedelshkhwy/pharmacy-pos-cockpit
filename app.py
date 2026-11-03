@@ -16,7 +16,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, abort, flash, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, Response, abort, flash, g, has_request_context, redirect, render_template, request, send_file, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -112,6 +112,8 @@ ITEM_EXTRA_COLUMNS = {
 }
 
 USER_EXTRA_COLUMNS = {
+    "org_id": "INTEGER NOT NULL DEFAULT 1",  # users created before organizations existed belong to the first one
+    "is_platform_admin": "INTEGER NOT NULL DEFAULT 0",
     "role": "TEXT NOT NULL DEFAULT 'owner'",  # users created before roles existed were full admins
     "branches": "TEXT NOT NULL DEFAULT '[]'",
     "must_change_password": "INTEGER NOT NULL DEFAULT 0",
@@ -312,15 +314,48 @@ TRANSLATIONS = {
 }
 
 
-def get_db() -> database.Connection:
-    return database.connect(DATABASE_URL, DB_PATH)
+PLATFORM_ORG_ID = 1  # the first organization shares the main space with the platform tables
 
 
-def init_db() -> None:
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    with get_db() as db:
-        db.executescript(
-            """
+def current_org_id() -> int:
+    """The organization of the signed-in user; the first organization outside a request (scripts, startup)."""
+    if has_request_context():
+        if "org_override" in g:
+            return g.org_override
+        user = current_user()
+        if user:
+            return int(user.get("org_id") or PLATFORM_ORG_ID)
+    return PLATFORM_ORG_ID
+
+
+def org_db_path(org_id: int) -> Path:
+    return DATA_DIR / "orgs" / str(org_id) / "pharmacy.db"
+
+
+def get_db(org_id: int | None = None) -> database.Connection:
+    """A connection to one organization's space (its business tables), which also sees the shared tables."""
+    org = current_org_id() if org_id is None else org_id
+    if org == PLATFORM_ORG_ID:
+        return database.connect(DATABASE_URL, DB_PATH)
+    if DATABASE_URL:
+        return database.connect(DATABASE_URL, DB_PATH, schema=f"org_{org}")
+    return database.connect(None, org_db_path(org), attach=DB_PATH)
+
+
+def platform_db() -> database.Connection:
+    """Shared tables: users, organizations, leads, login failures."""
+    return get_db(PLATFORM_ORG_ID)
+
+
+def org_dir(kind: str) -> Path:
+    """Where an organization's files live; the first organization keeps the original folders."""
+    base = {"imports": IMPORTS_DIR, "pos_analysis": POS_ANALYSIS_DIR, "pos_raw": POS_RAW_DIR, "uploads": UPLOAD_DIR}[kind]
+    org = current_org_id()
+    return base if org == PLATFORM_ORG_ID else DATA_DIR / "orgs" / str(org) / kind
+
+
+ORG_SCHEMA_SQL = """
+
             CREATE TABLE IF NOT EXISTS uploads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 branch TEXT NOT NULL,
@@ -444,7 +479,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_items_sku ON items(sku, branch);
             CREATE INDEX IF NOT EXISTS idx_items_upload ON items(upload_id);
             CREATE INDEX IF NOT EXISTS idx_uploads_branch ON uploads(branch);
+"""
 
+PLATFORM_SCHEMA_SQL = """
             CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TEXT NOT NULL,
@@ -473,23 +510,50 @@ def init_db() -> None:
                 password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
-            """
-        )
-        existing_item_columns = db.table_columns("items")
-        for column, definition in ITEM_EXTRA_COLUMNS.items():
-            if column not in existing_item_columns:
-                db.execute(f"ALTER TABLE items ADD COLUMN {column} {definition}")
+
+            CREATE TABLE IF NOT EXISTS organizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                business_type TEXT NOT NULL DEFAULT 'pharmacy',
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                created_ip TEXT NOT NULL DEFAULT ''
+            );
+"""
+
+
+def init_org_schema(db: database.Connection) -> None:
+    """Create or upgrade one organization's business tables (run on its own connection)."""
+    db.executescript(ORG_SCHEMA_SQL)
+    existing_item_columns = db.table_columns("items")
+    for column, definition in ITEM_EXTRA_COLUMNS.items():
+        if column not in existing_item_columns:
+            db.execute(f"ALTER TABLE items ADD COLUMN {column} {definition}")
+    existing_upload_columns = db.table_columns("uploads")
+    if "expiry_count" in existing_upload_columns and "alert_count" not in existing_upload_columns:
+        # The column always held decision alerts (stockouts, overstock, expiry, below cost), not expiry only.
+        db.execute("ALTER TABLE uploads RENAME COLUMN expiry_count TO alert_count")
+    for column, definition in UPLOAD_EXTRA_COLUMNS.items():
+        if column not in existing_upload_columns:
+            db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
+
+
+def init_db() -> None:
+    org_dir("uploads").mkdir(parents=True, exist_ok=True)
+    with platform_db() as db:
+        db.executescript(PLATFORM_SCHEMA_SQL)
+        init_org_schema(db)  # the first organization's tables live in the main space
         existing_user_columns = db.table_columns("users")
         for column, definition in USER_EXTRA_COLUMNS.items():
             if column not in existing_user_columns:
                 db.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
-        existing_upload_columns = db.table_columns("uploads")
-        if "expiry_count" in existing_upload_columns and "alert_count" not in existing_upload_columns:
-            # The column always held decision alerts (stockouts, overstock, expiry, below cost), not expiry only.
-            db.execute("ALTER TABLE uploads RENAME COLUMN expiry_count TO alert_count")
-        for column, definition in UPLOAD_EXTRA_COLUMNS.items():
-            if column not in existing_upload_columns:
-                db.execute(f"ALTER TABLE uploads ADD COLUMN {column} {definition}")
+        if not db.execute("SELECT 1 FROM organizations WHERE id = ?", (PLATFORM_ORG_ID,)).fetchone():
+            db.execute(
+                "INSERT INTO organizations (id, name, business_type, created_at) VALUES (?, ?, ?, ?)",
+                (PLATFORM_ORG_ID, "الجهة الأساسية", "pharmacy", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+        if db.is_postgres:  # an explicit id does not move the sequence
+            db.execute("SELECT setval(pg_get_serial_sequence('organizations', 'id'), GREATEST((SELECT MAX(id) FROM organizations), 1))")
         user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             password = DEFAULT_ADMIN_PASSWORD or initial_admin_password()
@@ -502,6 +566,15 @@ def init_db() -> None:
                     1,  # the first password was set by the server, not the person: they choose their own
                 ),
             )
+        if not db.execute("SELECT 1 FROM users WHERE is_platform_admin = 1").fetchone():
+            # Whoever ran the platform before organizations existed keeps running it.
+            first_owner = db.execute("SELECT id FROM users WHERE role = 'owner' AND org_id = ? ORDER BY id LIMIT 1", (PLATFORM_ORG_ID,)).fetchone()
+            if first_owner:
+                db.execute("UPDATE users SET is_platform_admin = 1 WHERE id = ?", (first_owner["id"],))
+        other_orgs = [row["id"] for row in db.execute("SELECT id FROM organizations WHERE id != ?", (PLATFORM_ORG_ID,))]
+    for org_id in other_orgs:
+        with get_db(org_id) as db:
+            init_org_schema(db)
 
 
 def apply_password_reset() -> None:
@@ -583,8 +656,11 @@ def current_user() -> dict[str, Any] | None:
     if "user" not in g:
         g.user = None
         if session.get("user_id"):
-            with get_db() as db:
-                row = db.execute("SELECT * FROM users WHERE id = ?", (session["user_id"],)).fetchone()
+            with platform_db() as db:
+                row = db.execute(
+                    "SELECT u.*, o.name AS org_name, o.status AS org_status FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.id = ?",
+                    (session["user_id"],),
+                ).fetchone()
             g.user = dict(row) if row else None
     return g.user
 
@@ -607,6 +683,8 @@ def allowed_branches() -> list[str] | None:
 
 def can(action: str) -> bool:
     user = current_user()
+    if action == "platform":  # runs the whole platform: every organization, leads
+        return bool(user) and bool(user.get("is_platform_admin"))
     return bool(user) and user.get("role", "owner") in PERMISSIONS[action]
 
 
@@ -615,8 +693,13 @@ def login_required(view):
     def wrapped_view(*args, **kwargs):
         if not session.get("user_id"):
             return redirect(url_for("login", next=request.path))
-        if current_user() is None:  # the account was deleted
+        user = current_user()
+        if user is None:  # the account was deleted
             session.clear()
+            return redirect(url_for("login"))
+        if user.get("org_status") == "suspended":
+            session.clear()
+            flash("حساب الجهة دي متوقف. كلم إدارة المنصة. / This organization is suspended.", "error")
             return redirect(url_for("login"))
         return view(*args, **kwargs)
 
@@ -974,7 +1057,7 @@ def backfill_snapshots() -> int:
             return 0
         db.upsert("app_settings", "key", {"key": "snapshots_backfilled", "value": "1"})
     count = 0
-    folders = sorted(POS_ANALYSIS_DIR.glob("*_20*/merged_items.csv"), key=lambda csv_path: csv_path.stat().st_mtime) if POS_ANALYSIS_DIR.exists() else []
+    folders = sorted(org_dir("pos_analysis").glob("*_20*/merged_items.csv"), key=lambda csv_path: csv_path.stat().st_mtime) if org_dir("pos_analysis").exists() else []
     for csv_path in folders:
         try:
             summary, branch, rows = read_analysis_rows(csv_path.parent)
@@ -987,7 +1070,6 @@ def backfill_snapshots() -> int:
 
 
 def import_pos_analysis_to_db(path: Path, replace_all: bool = False, import_token: str = "") -> int:
-    init_db()
     summary, branch, rows = read_analysis_rows(path)
     metadata = summary.get("metadata", {})
     week_date = (metadata.get("end_date") or date.today().isoformat()).split(" ")[0]
@@ -1111,13 +1193,13 @@ def remove_branch_files(branch: str | None = None) -> int:
     removed = 0
     targets: list[Path] = []
     if branch:
-        targets.append(POS_RAW_DIR / branch_slug(branch))
-        if POS_ANALYSIS_DIR.exists():
-            for folder in POS_ANALYSIS_DIR.glob(f"{branch_slug(branch)}_*"):
+        targets.append(org_dir("pos_raw") / branch_slug(branch))
+        if org_dir("pos_analysis").exists():
+            for folder in org_dir("pos_analysis").glob(f"{branch_slug(branch)}_*"):
                 if summary_branch(load_analysis_summary(folder).get("metadata", {}), folder) == branch:
                     targets.append(folder)
     else:
-        targets.extend([POS_RAW_DIR, POS_ANALYSIS_DIR, UPLOAD_DIR, IMPORTS_DIR])
+        targets.extend([org_dir("pos_raw"), org_dir("pos_analysis"), org_dir("uploads"), org_dir("imports")])
 
     for target in targets:
         try:
@@ -1133,7 +1215,7 @@ def remove_branch_files(branch: str | None = None) -> int:
             resolved.unlink()
             removed += 1
 
-    for directory in (UPLOAD_DIR, POS_RAW_DIR, POS_ANALYSIS_DIR, IMPORTS_DIR):
+    for directory in (org_dir("uploads"), org_dir("pos_raw"), org_dir("pos_analysis"), org_dir("imports")):
         directory.mkdir(parents=True, exist_ok=True)
 
     return removed
@@ -1316,7 +1398,7 @@ def free_analysis() -> Response:
         "pos_system": form.get("pos_system", "").strip()[:60],
         "message": form.get("message", "").strip()[:1000],
     }
-    with get_db() as db:
+    with platform_db() as db:
         db.execute(
             f"INSERT INTO leads ({', '.join(lead)}) VALUES ({', '.join('?' for _ in lead)})",
             tuple(lead.values()),
@@ -1344,7 +1426,7 @@ def demo_login() -> Response:
     """One-click read-only demo (only when PHARMACY_DEMO_MODE is on and seed_demo.py created the user)."""
     if not DEMO_MODE:
         abort(404)
-    with get_db() as db:
+    with platform_db() as db:
         user = db.execute("SELECT * FROM users WHERE username = ?", (DEMO_USERNAME,)).fetchone()
     if not user or user["role"] != "viewer":
         abort(404)
@@ -1361,16 +1443,16 @@ STATUS_LABELS = {"new": "جديد", "contacted": "اتكلمنا", "report_sent"
 
 @app.route("/leads", methods=["GET", "POST"])
 @login_required
-@permission_required("admin")
+@permission_required("platform")
 def leads_page() -> str | Response:
     if request.method == "POST":
         status = request.form.get("status", "")
         if status not in STATUS_LABELS:
             abort(400)
-        with get_db() as db:
+        with platform_db() as db:
             db.execute("UPDATE leads SET status = ? WHERE id = ?", (status, parse_int(request.form.get("lead_id"), 0)))
         return redirect(url_for("leads_page"))
-    with get_db() as db:
+    with platform_db() as db:
         leads = [dict(row) for row in db.execute("SELECT * FROM leads ORDER BY id DESC")]
     for lead in leads:
         number = re.sub(r"\D", "", lead["phone"].translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")))
@@ -1465,7 +1547,7 @@ PERIOD_SOURCES = {
 
 
 def import_dir(token: str) -> Path | None:
-    return IMPORTS_DIR / token if TOKEN_PATTERN.fullmatch(token or "") else None
+    return org_dir("imports") / token if TOKEN_PATTERN.fullmatch(token or "") else None
 
 
 def load_json(path: Path | None) -> dict[str, Any] | None:
@@ -1505,7 +1587,7 @@ def load_import_result(token: str) -> dict[str, Any] | None:
         row = db.execute("SELECT result FROM import_runs WHERE token = ?", (token,)).fetchone()
     if row:
         return json.loads(row["result"])
-    return load_json(IMPORTS_DIR / token / "result.json")  # imports made before results moved to the database
+    return load_json(org_dir("imports") / token / "result.json")  # imports made before results moved to the database
 
 
 def save_json(path: Path, data: dict[str, Any]) -> None:
@@ -1530,7 +1612,7 @@ def upload() -> str | Response:
 
     purge_abandoned_imports()
     token = secrets.token_hex(8)
-    folder = IMPORTS_DIR / token / "files"
+    folder = org_dir("imports") / token / "files"
     folder.mkdir(parents=True)
     logger.info("Upload %s by %s: %d file(s)", token, session.get("username"), len(files))
     profiles = load_mapping_profiles()
@@ -1554,7 +1636,7 @@ def upload() -> str | Response:
         stored.append({"stored": target.name, "original": original, "specs": [spec.to_dict() for spec in specs]})
 
     save_json(
-        IMPORTS_DIR / token / "draft.json",
+        org_dir("imports") / token / "draft.json",
         {
             "branch": clean_branch_label(request.form.get("branch", "")),
             "period_days": parse_int(request.form.get("period_days"), 0) or None,
@@ -1571,13 +1653,13 @@ ABANDONED_IMPORT_HOURS = 48
 def purge_abandoned_imports(max_age_hours: int = ABANDONED_IMPORT_HOURS) -> int:
     """Delete uploads that were never analyzed (closed tab, failed review) once they are old.
     Finished imports are kept: their files are what "Re-analyze" runs on."""
-    if not IMPORTS_DIR.exists():
+    if not org_dir("imports").exists():
         return 0
     with get_db() as db:
         finished = {row["token"] for row in db.execute("SELECT token FROM import_runs")}
     cutoff = datetime.now().timestamp() - max_age_hours * 3600
     removed = 0
-    for folder in IMPORTS_DIR.iterdir():
+    for folder in org_dir("imports").iterdir():
         if folder.is_dir() and TOKEN_PATTERN.fullmatch(folder.name) and folder.name not in finished and not (folder / "result.json").exists():
             if folder.stat().st_mtime < cutoff:
                 shutil.rmtree(folder, ignore_errors=True)
@@ -1657,7 +1739,7 @@ def upload_review(token: str) -> str | Response:
 
     try:
         result = run_smart_import(
-            tables, POS_ANALYSIS_DIR, default_branch=draft["branch"], period_days_override=draft["period_days"], settings=load_analysis_settings()
+            tables, org_dir("pos_analysis"), default_branch=draft["branch"], period_days_override=draft["period_days"], settings=load_analysis_settings()
         )
     except ValueError as exc:
         if str(exc) == "period_required":
@@ -2333,7 +2415,7 @@ def latest_import_tokens() -> list[str]:
     with get_db() as db:
         rows = db.execute("SELECT DISTINCT u.import_token FROM uploads u JOIN items i ON i.upload_id = u.id WHERE u.import_token != ''").fetchall()
     # Only imports whose original files are still on disk can be re-run (a redeploy without a disk loses them).
-    return [row["import_token"] for row in rows if (IMPORTS_DIR / row["import_token"] / "draft.json").exists()]
+    return [row["import_token"] for row in rows if (org_dir("imports") / row["import_token"] / "draft.json").exists()]
 
 
 def reanalyze_import(token: str, settings: AnalysisSettings) -> int:
@@ -2352,7 +2434,7 @@ def reanalyze_import(token: str, settings: AnalysisSettings) -> int:
     ]
     if not tables:
         return 0
-    rerun = run_smart_import(tables, POS_ANALYSIS_DIR, default_branch=draft["branch"], period_days_override=draft["period_days"], settings=settings)
+    rerun = run_smart_import(tables, org_dir("pos_analysis"), default_branch=draft["branch"], period_days_override=draft["period_days"], settings=settings)
     for branch_result in rerun.branches:
         import_pos_analysis_to_db(branch_result.output_dir, import_token=token)
     return len(rerun.branches)
@@ -2410,7 +2492,7 @@ def analysis_settings() -> str | Response:
 
 
 def owner_count(db: database.Connection) -> int:
-    return db.execute("SELECT COUNT(*) FROM users WHERE role = 'owner'").fetchone()[0]
+    return db.execute("SELECT COUNT(*) FROM users WHERE role = 'owner' AND org_id = ?", (current_org_id(),)).fetchone()[0]
 
 
 @app.route("/users", methods=["GET", "POST"])
@@ -2423,7 +2505,7 @@ def users_page() -> str | Response:
         branches = json.dumps(sorted({clean_branch_label(branch) for branch in request.form.getlist("branches") if clean_branch_label(branch)}), ensure_ascii=False)
         if role not in ROLES:
             abort(400)
-        with get_db() as db:
+        with platform_db() as db:
             if action == "create":
                 username = request.form.get("username", "").strip()
                 password = request.form.get("password", "")
@@ -2433,14 +2515,14 @@ def users_page() -> str | Response:
                     flash("اسم المستخدم ده موجود. / Username already exists.", "error")
                 else:
                     db.execute(
-                        "INSERT INTO users (username, password_hash, created_at, role, branches, must_change_password) VALUES (?, ?, ?, ?, ?, 1)",
-                        (username, generate_password_hash(password), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, branches),
+                        "INSERT INTO users (username, password_hash, created_at, role, branches, must_change_password, org_id) VALUES (?, ?, ?, ?, ?, 1, ?)",
+                        (username, generate_password_hash(password), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), role, branches, current_org_id()),
                     )
                     flash(f"اتعمل حساب {username}. / Created {username}.", "success")
                 return redirect(url_for("users_page"))
             user_id = parse_int(request.form.get("user_id"), 0)
-            target = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            if not target:
+            target = db.execute("SELECT * FROM users WHERE id = ? AND org_id = ?", (user_id, current_org_id())).fetchone()
+            if not target:  # missing, or belongs to another organization
                 abort(404)
             losing_owner = target["role"] == "owner" and (action == "delete" or role != "owner")
             if losing_owner and owner_count(db) <= 1:
@@ -2463,8 +2545,8 @@ def users_page() -> str | Response:
                     flash(f"اتمسح {target['username']}. / Deleted {target['username']}.", "success")
         return redirect(url_for("users_page"))
 
-    with get_db() as db:
-        users = [dict(row) for row in db.execute("SELECT id, username, role, branches, created_at FROM users ORDER BY id")]
+    with platform_db() as db:
+        users = [dict(row) for row in db.execute("SELECT id, username, role, branches, created_at FROM users WHERE org_id = ? ORDER BY id", (current_org_id(),))]
     for entry in users:
         entry["branch_list"] = user_branches(entry)
     return render_template("users.html", users=users, branch_choices=known_branches())
@@ -2655,12 +2737,15 @@ def login() -> str | Response:
     if login_locked(username, request.remote_addr or ""):
         flash(f"محاولات دخول غلط كتير. استنى {LOGIN_LOCK_MINUTES} دقيقة وجرب تاني. / Too many failed attempts; try again later.", "error")
         return redirect(url_for("login"))
-    with get_db() as db:
+    with platform_db() as db:
         user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
 
     if not user or not check_password_hash(user["password_hash"], password):
         record_login_failure(username, request.remote_addr or "")
         flash("اسم المستخدم أو كلمة المرور غير صحيحة.", "error")
+        return redirect(url_for("login"))
+    if organization_status(int(user["org_id"] or PLATFORM_ORG_ID)) == "suspended":
+        flash("حساب الجهة دي متوقف. كلم إدارة المنصة. / This organization is suspended.", "error")
         return redirect(url_for("login"))
 
     clear_login_failures(username)
@@ -2678,9 +2763,15 @@ def login() -> str | Response:
     return redirect(safe_next(request.args.get("next")) or url_for("index"))
 
 
+def organization_status(org_id: int) -> str:
+    with platform_db() as db:
+        row = db.execute("SELECT status FROM organizations WHERE id = ?", (org_id,)).fetchone()
+    return row["status"] if row else "active"
+
+
 def login_locked(username: str, ip: str) -> bool:
     since = (datetime.now() - timedelta(minutes=LOGIN_LOCK_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
-    with get_db() as db:
+    with platform_db() as db:
         by_user = db.execute("SELECT COUNT(*) FROM login_failures WHERE username = ? AND at >= ?", (username.casefold(), since)).fetchone()[0]
         by_ip = db.execute("SELECT COUNT(*) FROM login_failures WHERE ip = ? AND at >= ?", (ip, since)).fetchone()[0]
     return by_user >= LOGIN_MAX_FAILURES_PER_USER or by_ip >= LOGIN_MAX_FAILURES_PER_IP
@@ -2689,13 +2780,13 @@ def login_locked(username: str, ip: str) -> bool:
 def record_login_failure(username: str, ip: str) -> None:
     logger.warning("Failed login for %r from %s", username, ip)
     now = datetime.now()
-    with get_db() as db:
+    with platform_db() as db:
         db.execute("INSERT INTO login_failures (username, ip, at) VALUES (?, ?, ?)", (username.casefold(), ip, now.strftime("%Y-%m-%d %H:%M:%S")))
         db.execute("DELETE FROM login_failures WHERE at < ?", ((now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),))
 
 
 def clear_login_failures(username: str) -> None:
-    with get_db() as db:
+    with platform_db() as db:
         db.execute("DELETE FROM login_failures WHERE username = ?", (username.casefold(),))
 
 
@@ -2737,7 +2828,7 @@ def change_password() -> str | Response:
         flash("تأكيد كلمة المرور غير مطابق.", "error")
         return redirect(url_for("change_password"))
 
-    with get_db() as db:
+    with platform_db() as db:
         user = db.execute("SELECT * FROM users WHERE id = ?", (session["user_id"],)).fetchone()
         if not user or not check_password_hash(user["password_hash"], current_password):
             flash("كلمة المرور الحالية غير صحيحة.", "error")
@@ -2750,6 +2841,119 @@ def change_password() -> str | Response:
 
     flash("تم تغيير كلمة المرور بنجاح.", "success")
     return redirect(url_for("index"))
+
+
+SIGNUPS_PER_IP_PER_DAY = 5
+
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup() -> str | Response:
+    """Self-service: a new business creates its own organization and owner account."""
+    if session.get("user_id") and current_user() is not None:
+        return redirect(url_for("index"))
+    if request.method == "GET":
+        session.setdefault("lang", "ar")  # visitors come from the Arabic landing page; the toggle still works
+        return render_template("signup.html", profiles=BUSINESS_PROFILES, form={})
+
+    form = request.form
+    values = {key: form.get(key, "").strip() for key in ("org_name", "business_type", "username")}
+
+    def refuse(message: str) -> str:
+        flash(message, "error")
+        return render_template("signup.html", profiles=BUSINESS_PROFILES, form=values), 400
+
+    if form.get("website"):  # honeypot field; people never see it
+        return redirect(url_for("login"))
+    org_name = " ".join(values["org_name"].split())[:80]
+    business_type = values["business_type"]
+    username = values["username"]
+    password = form.get("password", "")
+    if len(org_name) < 2:
+        return refuse("اكتب اسم الجهة (حرفين على الأقل). / Enter the organization name.")
+    if business_type not in BUSINESS_PROFILES:
+        return refuse("اختار نوع النشاط. / Choose the business type.")
+    if not re.fullmatch(r"[\w.@-]{3,40}", username):
+        return refuse("اسم المستخدم 3-40 حرف من غير مسافات. / Username: 3-40 characters, no spaces.")
+    if len(password) < 8 or password == KNOWN_DEFAULT_PASSWORD:
+        return refuse("كلمة المرور 8 أحرف على الأقل. / Password must be at least 8 characters.")
+    if password != form.get("confirm_password", ""):
+        return refuse("تأكيد كلمة المرور غير مطابق. / Passwords do not match.")
+
+    ip = request.remote_addr or ""
+    since = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with platform_db() as db:
+        if db.execute("SELECT COUNT(*) FROM organizations WHERE created_ip = ? AND created_at >= ?", (ip, since)).fetchone()[0] >= SIGNUPS_PER_IP_PER_DAY:
+            return refuse("اتعمل حسابات كتير من نفس المكان النهارده. جرب بكرة أو كلمنا. / Too many sign-ups; try again tomorrow.")
+        if db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+            return refuse("اسم المستخدم ده مستخدم قبل كده، اختار اسم تاني. / That username is taken.")
+        org_id = db.insert(
+            "INSERT INTO organizations (name, business_type, status, created_at, created_ip) VALUES (?, ?, 'active', ?, ?)",
+            (org_name, business_type, now, ip),
+        )
+        user_id = db.insert(
+            "INSERT INTO users (username, password_hash, created_at, role, org_id, must_change_password) VALUES (?, ?, ?, 'owner', ?, 0)",
+            (username, generate_password_hash(password), now, org_id),
+        )
+    with get_db(org_id) as db:
+        init_org_schema(db)
+        db.upsert("app_settings", "key", {"key": "analysis", "value": dump_settings(AnalysisSettings().with_profile(business_type))})
+    logger.info("Sign-up: organization %s (%s, %s) owner %r from %s", org_id, org_name, business_type, username, ip)
+
+    lang = current_language()
+    session.clear()
+    session.permanent = True
+    session["user_id"] = user_id
+    session["username"] = username
+    session["lang"] = lang
+    flash("أهلاً بيك! الحساب اتعمل. ارفع أول ملف من نظام البيع علشان نبدأ التحليل. / Welcome! Upload your first POS file to start.", "success")
+    return redirect(url_for("upload"))
+
+
+def organization_summary(org: dict[str, Any]) -> dict[str, Any]:
+    """Counts for the platform console, read from the organization's own space."""
+    summary = dict(org)
+    try:
+        with get_db(int(org["id"])) as db:
+            latest = db.execute("SELECT MAX(uploaded_at) FROM uploads").fetchone()[0]
+            summary["uploads"] = db.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]
+            summary["branches"] = db.execute("SELECT COUNT(DISTINCT branch) FROM items").fetchone()[0]
+            summary["last_upload"] = latest or ""
+    except Exception:  # pragma: no cover - a broken space must not hide the others
+        logger.exception("Could not read organization %s", org["id"])
+        summary.update(uploads=0, branches=0, last_upload="")
+    return summary
+
+
+@app.route("/platform", methods=["GET", "POST"])
+@login_required
+@permission_required("platform")
+def platform_page() -> str | Response:
+    """The platform owner's console: every organization, its activity, suspend / activate."""
+    if request.method == "POST":
+        org_id = parse_int(request.form.get("org_id"), 0)
+        status = request.form.get("status", "")
+        if status not in {"active", "suspended"} or org_id <= 0:
+            abort(400)
+        if org_id == PLATFORM_ORG_ID:
+            flash("الجهة الأساسية مينفعش تتوقف. / The main organization cannot be suspended.", "error")
+            return redirect(url_for("platform_page"))
+        with platform_db() as db:
+            db.execute("UPDATE organizations SET status = ? WHERE id = ?", (status, org_id))
+        logger.warning("Organization %s set to %s by %s", org_id, status, session.get("username"))
+        flash("اتحفظ. / Saved.", "success")
+        return redirect(url_for("platform_page"))
+    with platform_db() as db:
+        orgs = [
+            dict(row)
+            for row in db.execute(
+                "SELECT o.*, (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id) AS user_count, "
+                "(SELECT MIN(username) FROM users u WHERE u.org_id = o.id AND u.role = 'owner') AS owner_name "
+                "FROM organizations o ORDER BY o.id DESC"
+            )
+        ]
+    orgs = [organization_summary(org) for org in orgs]
+    return render_template("platform.html", orgs=orgs, profiles=BUSINESS_PROFILES)
 
 
 init_db()

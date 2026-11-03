@@ -21,6 +21,7 @@
         <a href="#how">إزاي بتشتغل</a>
         <a href="#features">المميزات</a>
         <a href="#faq">أسئلة</a>
+        <a href="{{ url_for('signup') }}">حساب جديد</a>
         <a class="login-link" href="{{ url_for('login') }}">دخول العملاء</a>
       </nav>
     </div>
@@ -34,7 +35,8 @@
           <h1>اعرف فلوس صيدليتك<br>بتضيع فين بالظبط</h1>
           <p class="lead">ارفع ملفات السيستم بتاعك زي ما هي. في دقايق هتعرف الفلوس اللي بتضيع في <strong>الصلاحية</strong> و<strong>الراكد</strong> و<strong>البيع تحت التكلفة</strong> و<strong>النواقص</strong>، بالجنيه وباسم كل صنف، ومعاها تعمل إيه النهارده.</p>
           <div class="cta-row">
-            <a class="btn primary" href="#free-analysis">اطلب تحليلك المجاني</a>
+            <a class="btn primary" href="{{ url_for('signup') }}">اعمل حساب مجاني وابدأ</a>
+            <a class="btn ghost" href="#free-analysis">اطلب تحليلك المجاني</a>
             {% if demo_mode %}<a class="btn ghost" href="{{ url_for('demo_login') }}">جرّب النسخة التجريبية</a>{% endif %}
             {% if whatsapp_url %}<a class="btn whatsapp" href="{{ whatsapp_url }}" target="_blank" rel="noopener">كلمنا واتساب</a>{% endif %}
           </div>
@@ -230,6 +232,7 @@
       <span>© منصة الصيدليات</span>
       <nav aria-label="روابط">
         <a href="{{ url_for('privacy') }}">سياسة الخصوصية</a>
+        <a href="{{ url_for('signup') }}">حساب جديد</a>
         <a href="{{ url_for('login') }}">دخول العملاء</a>
         {% if contact_email %}<a href="mailto:{{ contact_email }}">{{ contact_email }}</a>{% endif %}
         {% if whatsapp_number %}<a href="{{ whatsapp_url }}" target="_blank" rel="noopener" dir="ltr">+{{ whatsapp_number }}</a>{% endif %}
