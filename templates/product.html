@@ -35,7 +35,7 @@
   <article class="panel insight-card">
     <h2>Detailed recommendation</h2>
     {% if main %}
-    <p><strong>{{ main.decision_label or main.action }}</strong></p>
+    <p><strong>{{ decision(main) }}</strong></p>
     <p>{{ main.action or "Decision is generated from stockout probability, movement velocity, stock value, and current stock position." }}</p>
     <div class="chips">
       <span>{{ main.tags }}</span>

@@ -24,7 +24,7 @@ import actions as action_plans
 import ask as data_questions
 import db as database
 from insights import analyze_profit_loss
-from pos_pipeline import normalize_branch_name
+from pos_pipeline import decision_text, normalize_branch_name
 from settings import BUSINESS_PROFILES, SETTING_FIELDS, SETTING_GROUPS, AnalysisSettings
 from settings import dumps as dump_settings
 from settings import loads as load_settings_json
@@ -806,6 +806,15 @@ def translate(key: str) -> str:
     return TRANSLATIONS.get(lang, TRANSLATIONS["en"]).get(key, TRANSLATIONS["en"].get(key, key))
 
 
+def row_decision(row: Any, lang: str) -> str:
+    """An item's decision in the screen's language (older rows only have an action)."""
+    keys = row.keys() if hasattr(row, "keys") else []
+    label = row["decision_label"] if "decision_label" in keys else ""
+    if label:
+        return decision_text(label, lang)
+    return row["action"] if "action" in keys and row["action"] else ""
+
+
 @app.context_processor
 def inject_language_helpers() -> dict[str, Any]:
     lang = current_language()
@@ -818,6 +827,7 @@ def inject_language_helpers() -> dict[str, Any]:
         "scoped_user": allowed_branches() is not None,
         "user": current_user(),
         "roles": ROLES,
+        "decision": lambda row: row_decision(row, lang),
         "is_demo_user": bool(current_user()) and current_user()["username"] == DEMO_USERNAME and DEMO_MODE,
     }
 
