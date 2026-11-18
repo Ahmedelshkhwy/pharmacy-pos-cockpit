@@ -171,3 +171,32 @@ def test_action_center_and_purchase_order_excel(client):
     quantities = [row[5] for row in sheet.iter_rows(min_row=2, values_only=True) if row[0]]
     total_row = [row for row in sheet.iter_rows(values_only=True) if row[2] in ("Total", "الإجمالي")][0]
     assert quantities and total_row[5] == sum(quantities)
+
+
+def test_transfers_excel_has_a_sheet_per_sending_branch(client):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    submit_review(client, upload(client, [SAMPLES / "D_chain_multi_branch.xlsx"]))
+    assert "/transfers.xlsx" in client.get("/actions").data.decode()
+    response = client.get("/transfers.xlsx")
+    assert response.status_code == 200 and response.mimetype.endswith("spreadsheetml.sheet")
+    workbook = load_workbook(BytesIO(response.data))
+    branches = {"Zayed", "Downtown", "Nasr City"}
+    assert workbook.sheetnames and all(any(b in name for b in branches) for name in workbook.sheetnames)
+    total_qty = 0
+    for name in workbook.sheetnames:
+        sender = next(b for b in branches if b in name)
+        rows = [row for row in workbook[name].iter_rows(min_row=2, values_only=True) if row[0]]
+        assert rows and all(row[2] in branches and row[2] != sender and row[3] > 0 for row in rows)  # never to itself
+        total = [row for row in workbook[name].iter_rows(values_only=True) if row[1] in ("Total", "الإجمالي")][0]
+        assert total[3] == sum(row[3] for row in rows)
+        total_qty += total[3]
+    assert total_qty > 0
+    # One branch: only transfers that touch it.
+    zayed = load_workbook(BytesIO(client.get("/transfers.xlsx?branch=Zayed").data))
+    for name in zayed.sheetnames:
+        for row in zayed[name].iter_rows(min_row=2, values_only=True):
+            if row[0]:
+                assert "Zayed" in name or row[2] == "Zayed"

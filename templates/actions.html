@@ -71,6 +71,7 @@
       {% endfor %}
     </tbody>
   </table>
+  <p><a class="button primary" href="{{ url_for('transfers_export', **branch_args) }}">{% if ar %}نزّل التحويلات Excel (شيت لكل فرع){% else %}Download transfers as Excel (a sheet per branch){% endif %}</a></p>
   {% if transfers|length > 15 %}
   <button class="button" type="button" onclick="this.previousElementSibling.querySelector('.more-rows').hidden = false; this.remove();">
     {% if ar %}اعرض الباقي ({{ transfers|length - 15 }}){% else %}Show the rest ({{ transfers|length - 15 }}){% endif %}
