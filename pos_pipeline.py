@@ -297,6 +297,28 @@ def calculate_risk_score(
     return int(max(1, min(10, round(score))))
 
 
+# Arabic wording of each decision, for screens in Arabic (stored labels stay English).
+DECISION_LABELS_AR = {
+    "Buy or transfer now": "اشتري أو حوّل دلوقتي",
+    "Buy within 7 days": "اشتري خلال 7 أيام",
+    "Plan reorder within 14 days": "جهّز الطلب خلال 14 يوم",
+    "Clear dead stock": "صرّف الراكد",
+    "Stop buying and transfer/promote": "وقّف الشراء وحوّل أو اعمل عرض",
+    "Monitor for reorder": "تابعه للطلب",
+    "Review today": "راجعه النهارده",
+    "Healthy": "سليم",
+    "Fix price: selling below cost": "صحّح السعر: بيتباع تحت التكلفة",
+    "Sell or return before expiry": "بيع أو رجّع قبل الصلاحية",
+    "Remove expired stock": "شيل المنتهي",
+}
+
+
+def decision_text(label: str | None, lang: str = "en") -> str:
+    """A decision label in the screen's language; unknown labels are shown as they are."""
+    label = label or ""
+    return DECISION_LABELS_AR.get(label, label) if lang == "ar" else label
+
+
 def decision_for_item(
     *,
     qoh: float,

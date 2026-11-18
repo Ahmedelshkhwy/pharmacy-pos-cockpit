@@ -8,7 +8,7 @@
       <td><a class="item-link" href="{{ url_for('product_detail', sku=row.sku, branch=row.branch) }}">{{ row.name }}</a></td>
       <td>{{ row.stock|round(2) }}</td>
       <td>{{ "{:.0%}".format(row.stockout_probability_30d or 0) }}</td>
-      <td>{{ row.decision_label or row.action }}</td>
+      <td>{{ decision(row) }}</td>
     </tr>
     {% else %}
     <tr><td colspan="6" class="empty">{{ t("no_data") }}</td></tr>

@@ -15,6 +15,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from pos_pipeline import decision_text
 from smart_import import ARABIC_DIGITS, normalize_text
 
 logger = logging.getLogger("pharmacy.ask")
@@ -251,7 +252,7 @@ def run_query(rows: list[dict[str, Any]], query: Query, lang: str = "ar") -> Ans
         columns=[("name", "الصنف" if ar else "Item"), ("branch", "الفرع" if ar else "Branch"), ("value", label),
                  ("stock", "الرصيد" if ar else "Stock"), ("decision", "القرار" if ar else "Decision")],
         rows=[{"name": row["name"], "sku": row.get("sku"), "branch": row["branch"], "value": fmt(value_of(row)),
-               "stock": f"{num(row.get('stock')):,.0f}", "decision": row.get("decision_label") or ""} for row in ordered],
+               "stock": f"{num(row.get('stock')):,.0f}", "decision": decision_text(row.get("decision_label"), "ar" if ar else "en")} for row in ordered],
         understood=understood,
         query=asdict(query),
         note=note,
@@ -369,7 +370,7 @@ def ask(question: str, rows: list[dict[str, Any]], lang: str = "ar", client: Any
 EXAMPLES_AR = [
     "إيه أكتر 5 أصناف بتخسرني فلوس؟",
     "أنهي فرع عنده أكبر فلوس متجمدة؟",
-    "كام صنف راكد في فرع {branch}؟",
+    "كام صنف راكد في {branch}؟",
     "أكتر أصناف بتكسب في {branch}",
     "أنهي مورد بنشتري منه أكتر؟",
     "الأصناف اللي صلاحيتها قربت",

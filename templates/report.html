@@ -97,7 +97,7 @@
         <td>{{ "{:,.0f}".format(row.lost_sales_value or 0) }}</td>
         <td>{{ "{:,.0f}".format(row.frozen_capital_value or 0) }}</td>
         <td>
-          <strong>{{ row.decision_label or row.action }}</strong>
+          <strong>{{ decision(row) }}</strong>
           <small>{{ row.tags }}</small>
         </td>
       </tr>

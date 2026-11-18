@@ -101,3 +101,19 @@ def test_ask_page_respects_branch_permissions(client):
     assert "Downtown</td>" not in page and "Nasr City" not in page
     owner_page = client.get("/ask", query_string={"q": "compare branches by sales"}).data.decode()
     assert "Downtown" in owner_page and "Nasr City" in owner_page
+
+
+def test_every_decision_has_arabic_wording():
+    import re
+    from pathlib import Path
+
+    from pos_pipeline import DECISION_LABELS_AR, decision_text
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "pos_pipeline.py").read_text(encoding="utf-8") + (root / "smart_pipeline.py").read_text(encoding="utf-8")
+    labels = set(re.findall(r'return "([A-Z][^"]+)"', source.split("def decision_for_item", 1)[1].split("\ndef ", 1)[0]))
+    labels |= set(re.findall(r'decision = "([^"]+)"', source))
+    assert labels and labels <= set(DECISION_LABELS_AR)
+    assert decision_text("Remove expired stock", "ar") == "شيل المنتهي"
+    assert decision_text("Remove expired stock", "en") == "Remove expired stock"
+    assert decision_text("Something new", "ar") == "Something new"
