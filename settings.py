@@ -28,12 +28,23 @@ class AnalysisSettings:
     thin_margin_percent: float = 8.0
     correct_stockouts: bool = True
     recency_half_life_days: int = 30
+    protect_volume_items: bool = True
     # [{"kind": "supplier" | "category", "name": "...", "days": 3}]
     lead_time_overrides: list[dict[str, Any]] = field(default_factory=list)
 
-    def safety_z(self, abc_class: str = "") -> float:
+    def service_class(self, abc_class: str = "", volume_class: str = "") -> str:
+        """The class that sets availability: the profit class, or the quantity class when it is higher.
+
+        A low-profit item that sells in large numbers (syringes, paracetamol) brings customers in,
+        so with protect_volume_items it keeps the availability of its quantity class.
+        """
+        if self.protect_volume_items and volume_class and (not abc_class or "ABC".index(volume_class) < "ABC".index(abc_class)):
+            return volume_class
+        return abc_class
+
+    def safety_z(self, abc_class: str = "", volume_class: str = "") -> float:
         """Safety stock factor: A items get the highest availability, C items the lowest."""
-        level = {"A": self.service_level_a, "C": self.service_level_c}.get(abc_class, self.service_level_b)
+        level = {"A": self.service_level_a, "C": self.service_level_c}.get(self.service_class(abc_class, volume_class), self.service_level_b)
         return NormalDist().inv_cdf(level / 100)
 
     def lead_time_for(self, supplier: str, category: str) -> int:
@@ -115,6 +126,9 @@ SETTING_FIELDS = [
                  "الأصناف المتوسطة، والأصناف اللي مالهاش تصنيف.", "Mid items, and items without a class.", 50, 99.9, 0.5, "%", "%"),
     SettingField("service_level_c", "supply", "نسبة التوفر لأصناف C", "Availability for C items",
                  "أصناف C ربحها قليل. نسبة أقل بتقلل الفلوس المتجمدة فيها.", "C items earn little; a lower level frees cash tied up in them.", 50, 99.9, 0.5, "%", "%"),
+    SettingField("protect_volume_items", "supply", "احمِ الأصناف الكتير البيع", "Protect high-volume items",
+                 "صنف بيتباع كميات كبيرة وربحه قليل (زي السرنجة) بيجيب زباين، فياخد نسبة التوفر بتاعة تصنيفه في الكمية لو أعلى من تصنيفه في الربح.",
+                 "An item that sells in large numbers with little profit (like syringes) brings customers in, so it gets the availability of its quantity class when that is higher than its profit class.", kind="bool"),
     SettingField("slow_moving_cover_days", "movement", "بطيء لو الرصيد يغطي أكتر من", "Slow if stock covers more than",
                  "صنف بيتباع بس الرصيد بتاعه يكفي أكتر من المدة دي.", "Item sells but stock lasts longer than this.", 7, 3650),
     SettingField("overstock_cover_days", "movement", "زيادة مخزون لو يغطي أكتر من", "Overstock if stock covers more than",

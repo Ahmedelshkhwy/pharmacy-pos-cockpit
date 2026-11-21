@@ -126,6 +126,9 @@ ITEM_EXTRA_COLUMNS = {
     "abc_class": "TEXT NOT NULL DEFAULT ''",
     "xyz_class": "TEXT NOT NULL DEFAULT ''",
     "demand_cv": "REAL",
+    "volume_class": "TEXT NOT NULL DEFAULT ''",
+    "segment": "TEXT NOT NULL DEFAULT ''",
+    "gmroi": "REAL",
 }
 
 USER_EXTRA_COLUMNS = {
@@ -962,6 +965,9 @@ ITEM_CSV_FIELDS = {
     "abc_class": ("abc_class", str),
     "xyz_class": ("xyz_class", str),
     "demand_cv": ("demand_cv", parse_optional_float),
+    "volume_class": ("volume_class", str),
+    "segment": ("segment", str),
+    "gmroi": ("gmroi", parse_optional_float),
 }
 
 
@@ -2038,8 +2044,21 @@ def abc_analysis() -> str:
         key=lambda row: -row["stockout_probability_14d"],
     )[:15]
     frozen_c = sorted((row for row in rows if row["abc_class"] in ("C", "") and row["frozen_capital_value"] > 0), key=lambda row: -row["frozen_capital_value"])[:15]
+    traffic_at_risk = sorted(
+        (row for row in rows if row["segment"] == "traffic" and ("stockout_with_sales" in row["tags"] or row["stockout_probability_14d"] >= 0.5)),
+        key=lambda row: -row["stockout_probability_14d"],
+    )[:15]
+    # Stock that earns least per 1 held: only items holding real money, so a single box does not top the list.
+    held = [row for row in rows if row["gmroi"] is not None and row["cost_value"] > 0]
+    floor = sorted(row["cost_value"] for row in held)[len(held) // 2] if held else 0
+    low_gmroi = sorted((row for row in held if row["cost_value"] >= floor), key=lambda row: (row["gmroi"], -row["cost_value"]))[:10]
     return render_template(
         "abc.html",
+        segments=action_plans.segment_summary(rows),
+        has_segments=any(row["segment"] for row in rows),
+        overall_gmroi=action_plans.stock_gmroi(rows),
+        traffic_at_risk=traffic_at_risk,
+        low_gmroi=low_gmroi,
         matrix=action_plans.abc_matrix(rows),
         at_risk=at_risk,
         frozen_c=frozen_c,

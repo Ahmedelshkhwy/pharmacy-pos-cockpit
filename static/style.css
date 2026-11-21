@@ -1248,3 +1248,9 @@ td small { display: block; }
 }
 .table-wrap { overflow-x: auto; }
 .inline-form { display: inline-block; margin-inline-start: 8px; }
+
+.big-number { font-size: 2.6rem; font-weight: 800; line-height: 1.1; margin: 0.2rem 0 0.6rem; color: var(--accent); font-variant-numeric: tabular-nums; }
+.segment-table td:first-child { white-space: normal; min-width: 14rem; }
+.segment-note { display: block; color: var(--muted); font-size: 0.85rem; font-weight: 400; margin-top: 0.15rem; }
+.gmroi-card .big-number { color: var(--accent); }
+@media (max-width: 700px) { .segment-table td:first-child { min-width: 0; } .segment-note { display: none; } .segment-table th, .segment-table td { padding-inline: 0.3rem; } }

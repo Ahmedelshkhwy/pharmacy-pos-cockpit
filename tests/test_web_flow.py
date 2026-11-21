@@ -200,3 +200,16 @@ def test_transfers_excel_has_a_sheet_per_sending_branch(client):
         for row in zayed[name].iter_rows(min_row=2, values_only=True):
             if row[0]:
                 assert "Zayed" in name or row[2] == "Zayed"
+
+
+def test_abc_page_shows_quantity_and_profit_groups_and_gmroi(client):
+    submit_review(client, upload(client, [SAMPLES / "A_arabic_pharmacy_report.xlsx"], branch="Maadi"))
+    page = client.get("/abc").data.decode()
+    assert "GMROI" in page
+    assert "Traffic builders" in page or "جاذبين زباين" in page
+    assert "Lowest return on money held" in page or "أقل عائد على الفلوس الواقفة" in page
+    # Items in the lowest-return list have a GMROI, so their product page shows it too.
+    links = re.findall(r'href="(/products/[^"]+)"', page.split("Lowest return on money held" if "Lowest return on money held" in page else "أقل عائد على الفلوس الواقفة")[1])
+    assert links
+    product = client.get(links[0].replace("&amp;", "&")).data.decode()
+    assert "GMROI" in product
