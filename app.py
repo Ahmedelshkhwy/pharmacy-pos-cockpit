@@ -1977,6 +1977,55 @@ def purchase_orders_export() -> Response:
     return send_file(output, as_attachment=True, download_name=name, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+@app.route("/transfers.xlsx")
+@login_required
+def transfers_export() -> Response:
+    """Transfer list per sending branch: what each branch sends, to whom, how many, and why."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    branch = selected_branch(request.args.get("branch"))
+    transfers = sorted(action_plan(branch)["transfers"], key=lambda t: (t.from_branch, t.to_branch, -t.value))
+    ar = current_language() == "ar"
+    reasons = {"dead": ("راكد عنده", "Dead stock there"), "expiry": ("صلاحيته قربت عنده", "Expiring there"), "overstock": ("زيادة عنده", "Surplus there")}
+    headers = (["الكود", "الصنف", "إلى فرع", "الكمية", "قيمة الوحدة", "القيمة", "السبب", "ملاحظة"] if ar
+               else ["Code", "Item", "To branch", "Qty", "Unit value", "Value", "Reason", "Note"])
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    used_titles: set[str] = set()
+    for sender in sorted({t.from_branch for t in transfers}):
+        title = re.sub(r"[\\/*?:\[\]]", " ", f"{'من' if ar else 'From'} {sender}")[:28].strip() or "Transfers"
+        while title in used_titles:
+            title = title[:26] + str(len(used_titles))
+        used_titles.add(title)
+        sheet = workbook.create_sheet(title)
+        sheet.sheet_view.rightToLeft = ar
+        sheet.append(headers)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        lines = [t for t in transfers if t.from_branch == sender]
+        for t in lines:
+            notes = []
+            if t.receiver_urgent:
+                notes.append("ناقص عنده" if ar else "Out of stock there")
+            if t.days_left is not None:
+                notes.append(f"فاضل {t.days_left} يوم على الصلاحية" if ar else f"{t.days_left} days to expiry")
+            sheet.append([t.from_sku, t.item, t.to_branch, t.qty, round(t.unit_value, 2), round(t.value, 2),
+                          reasons.get(t.reason, (t.reason, t.reason))[0 if ar else 1], "، ".join(notes) if ar else ", ".join(notes)])
+        sheet.append([])
+        sheet.append(["", "الإجمالي" if ar else "Total", "", sum(t.qty for t in lines), "", round(sum(t.value for t in lines), 2)])
+        sheet.column_dimensions["B"].width = 34
+        sheet.column_dimensions["C"].width = 20
+        sheet.column_dimensions["H"].width = 30
+    if not transfers:
+        workbook.create_sheet("Empty").append(["مفيش تحويلات دلوقتي" if ar else "No transfers right now"])
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    name = f"transfers_{branch_slug(branch) if branch else 'all'}_{date.today().isoformat()}.xlsx"
+    return send_file(output, as_attachment=True, download_name=name, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @app.route("/abc")
 @login_required
 def abc_analysis() -> str:
