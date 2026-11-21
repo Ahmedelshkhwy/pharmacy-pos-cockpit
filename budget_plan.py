@@ -201,9 +201,9 @@ def solve(candidates: list[Candidate], budget: float, min_order: float) -> str:
     return "optimal" if status == highspy.HighsModelStatus.kOptimal else "time_limit"
 
 
-def priority_order_plan(candidates: list[Candidate], budget: float, min_order: float) -> tuple[float, float]:
-    """What buying in the order's own priority (urgent, soon, planned; bigger first) would achieve
-    with the same budget: (spent, avoided loss). Orders that end up under the minimum are dropped."""
+def priority_order_quantities(candidates: list[Candidate], budget: float, min_order: float) -> list[int]:
+    """Units bought when following the order's own priority (urgent, soon, planned; bigger first)
+    until the budget runs out. Orders that end up under the supplier minimum are dropped."""
     ranked = sorted(range(len(candidates)), key=lambda i: (PRIORITY_ORDER[candidates[i].priority], -candidates[i].suggested * candidates[i].unit_cost))
     qty = [0] * len(candidates)
     left = budget
@@ -215,12 +215,15 @@ def priority_order_plan(candidates: list[Candidate], budget: float, min_order: f
     totals: dict[tuple[str, str], float] = {}
     for index, candidate in enumerate(candidates):
         totals[(candidate.branch, candidate.supplier)] = totals.get((candidate.branch, candidate.supplier), 0.0) + qty[index] * candidate.unit_cost
-    spent = avoided = 0.0
-    for index, candidate in enumerate(candidates):
-        if min_order_applies(candidate.supplier, min_order) and totals[(candidate.branch, candidate.supplier)] < min_order:
-            continue
-        spent += qty[index] * candidate.unit_cost
-        avoided += sum(candidate.unit_values[: qty[index]])
+    return [0 if min_order_applies(c.supplier, min_order) and totals[(c.branch, c.supplier)] < min_order else qty[i]
+            for i, c in enumerate(candidates)]
+
+
+def priority_order_plan(candidates: list[Candidate], budget: float, min_order: float) -> tuple[float, float]:
+    """What buying in priority order would achieve with the same budget: (spent, avoided loss)."""
+    qty = priority_order_quantities(candidates, budget, min_order)
+    spent = sum(q * c.unit_cost for q, c in zip(qty, candidates))
+    avoided = sum(sum(c.unit_values[:q]) for q, c in zip(qty, candidates))
     return spent, avoided
 
 
