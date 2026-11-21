@@ -2870,6 +2870,127 @@ def branch_locations_template() -> Response:
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+TRIP_REASONS = {
+    "wait": ("مش مستعجل: يستنى يوم العربية فيه معدية من هناك", "Not urgent: waits for a day the vehicle passes there"),
+    "not_worth": ("قيمته أقل من تكلفة اللفّة الزيادة", "Worth less than the extra driving"),
+    "no_time": ("مفيش وقت في وردية النهارده", "No time left in today's shift"),
+    "stale": ("بيانات الفرع قديمة", "Branch data is out of date"),
+    "no_location": ("مكان الفرع مش متحدد", "Branch location not set"),
+}
+
+
+def transport_plan_data() -> dict[str, Any]:
+    """Today's trip from the latest uploaded files of every branch."""
+    import transport
+    import trip_plan
+
+    settings = load_analysis_settings()
+    data = action_plan(None)
+    locations = load_branch_locations()
+    base = next((name for name, row in locations.items() if row["is_base"]), "")
+    matrix = distance_matrix(settings)
+    with get_db() as db:
+        last_upload = {row["branch"]: row["last"] for row in db.execute("SELECT branch, MAX(uploaded_at) AS last FROM uploads GROUP BY branch")}
+    stale = set()
+    if settings.stale_data_days > 0:
+        cutoff = (datetime.now() - timedelta(days=settings.stale_data_days)).strftime("%Y-%m-%d %H:%M:%S")
+        stale = {branch for branch, last in last_upload.items() if last and last < cutoff}
+    plan = trip_plan.plan_trip(data["transfers"], data["item_rows"], settings, matrix, base, stale)
+    order = [plan.base] + [stop.branch for stop in plan.stops] + [plan.base]
+    points = [(locations[b]["lat"], locations[b]["lng"]) for b in order if b in locations] if plan.stops else []
+    return {"plan": plan, "settings": settings, "locations": locations, "last_upload": last_upload, "base": base,
+            "maps_link": transport.directions_link(points), "route_points": [{"name": b, "lat": p[0], "lng": p[1]} for b, p in zip(order, points)],
+            "transfer_count": len(data["transfers"])}
+
+
+def trip_message(plan: Any, maps_link: str, ar: bool) -> str:
+    """The trip as a short WhatsApp message for the driver: per stop, what goes to or comes from where.
+    The item list is in the driver's Excel sheet."""
+    def grouped(lines: list[Any], other: str, verb: str, joiner: str) -> str:
+        groups: dict[str, list[Any]] = {}
+        for c in lines:
+            groups.setdefault(getattr(c.transfer, other), []).append(c)
+        return "، ".join(
+            f"{verb} {len(items)} {'صنف' if ar else 'items'} ({sum(c.transfer.qty for c in items)} {'قطعة' if ar else 'units'}) {joiner} {branch}"
+            for branch, items in groups.items()
+        )
+
+    load, drop = ("حمّل", "سلّم") if ar else ("load", "drop")
+    to, frm = ("لـ", "من") if ar else ("for", "from")
+    hours, minutes = divmod(int(plan.minutes), 60)
+    lines = [f"🚚 {'مشوار النهارده' if ar else 'Today’s trip'}: {plan.km:g} {'كم' if ar else 'km'}, {hours}:{minutes:02d}"]
+    if plan.load_at_base:
+        lines.append(f"0) {plan.base}: {grouped(plan.load_at_base, 'to_branch', load, to)}")
+    for number, stop in enumerate(plan.stops, 1):
+        parts = [grouped(stop.drops, "from_branch", drop, frm), grouped(stop.pickups, "to_branch", load, to)]
+        lines.append(f"{number}) {stop.branch}: " + " | ".join(part for part in parts if part))
+    if plan.unload_at_base:
+        lines.append(f"↩ {plan.base}: {grouped(plan.unload_at_base, 'from_branch', drop, frm)}")
+    lines.append("التفاصيل صنف صنف في ورقة الإكسل." if ar else "Item details are in the Excel sheet.")
+    if maps_link:
+        lines.append(maps_link)
+    return "\n".join(lines)
+
+
+@app.route("/transport-plan")
+@login_required
+def transport_plan_page() -> str:
+    if allowed_branches() is not None:
+        abort(403)  # the trip crosses every branch
+    data = transport_plan_data()
+    ar = current_language() == "ar"
+    return render_template("transport_plan.html", **data, reasons=TRIP_REASONS,
+                           whatsapp=action_plans.whatsapp_link(trip_message(data["plan"], data["maps_link"], ar)))
+
+
+@app.route("/transport-plan.xlsx")
+@login_required
+def transport_plan_export() -> Response:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    if allowed_branches() is not None:
+        abort(403)
+    data = transport_plan_data()
+    plan = data["plan"]
+    ar = current_language() == "ar"
+    workbook = Workbook()
+    route = workbook.active
+    route.title = "خط السير" if ar else "Route"
+    route.sheet_view.rightToLeft = ar
+    route.append(["المحطة", "الفرع", "العملية", "الكود", "الصنف", "الكمية", "من / إلى"] if ar
+                 else ["Stop", "Branch", "Action", "Code", "Item", "Qty", "From / to"])
+    load, drop = ("حمّل", "سلّم") if ar else ("Load", "Drop")
+    for c in plan.load_at_base:
+        route.append([0, plan.base, load, c.transfer.from_sku, c.transfer.item, c.transfer.qty, c.transfer.to_branch])
+    for number, stop in enumerate(plan.stops, 1):
+        for c in stop.drops:
+            route.append([number, stop.branch, drop, c.transfer.sku, c.transfer.item, c.transfer.qty, c.transfer.from_branch])
+        for c in stop.pickups:
+            route.append([number, stop.branch, load, c.transfer.from_sku, c.transfer.item, c.transfer.qty, c.transfer.to_branch])
+    for c in plan.unload_at_base:
+        route.append([len(plan.stops) + 1, plan.base, drop, c.transfer.sku, c.transfer.item, c.transfer.qty, c.transfer.from_branch])
+    route.append([])
+    route.append(["", "الإجمالي" if ar else "Total", f"{plan.km:g} {'كم' if ar else 'km'}", "", "", sum(c.transfer.qty for c in plan.carried), ""])
+    later = workbook.create_sheet("اتأجل" if ar else "Postponed")
+    later.sheet_view.rightToLeft = ar
+    later.append(["الصنف", "من", "إلى", "الكمية", "قيمة التحويل", "كم زيادة", "السبب"] if ar
+                 else ["Item", "From", "To", "Qty", "Transfer value", "Extra km", "Reason"])
+    for c in sorted(plan.left_out, key=lambda c: -c.value):
+        later.append([c.transfer.item, c.transfer.from_branch, c.transfer.to_branch, c.transfer.qty, round(c.value, 2),
+                      c.detour_km or "", TRIP_REASONS.get(c.reason, (c.reason, c.reason))[0 if ar else 1]])
+    for sheet in (route, later):
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        sheet.column_dimensions["B"].width = 24
+        sheet.column_dimensions["E" if sheet is route else "A"].width = 34
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f"trip_{date.today().isoformat()}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @app.route("/users", methods=["GET", "POST"])
 @login_required
 @permission_required("admin")

@@ -287,3 +287,27 @@ def test_branches_page_saves_locations_imports_excel_and_measured_distances(clie
     assert 'class="measured">41' in page
     client.post("/branches", data={"csrf_token": token, "action": "delete_distance", "from_branch": "Zayed", "to_branch": "Downtown"})
     assert 'class="measured">41' not in client.get("/branches").data.decode()
+
+
+def test_transport_plan_page_excel_and_access(client):
+    from openpyxl import load_workbook
+
+    submit_review(client, upload(client, [SAMPLES / "D_chain_multi_branch.xlsx"]))
+    page = client.get("/transport-plan").data.decode()
+    assert "/branches" in page   # no base or locations yet: points to the setup page
+    token = re.search(r'name="csrf_token" value="([^"]+)"', client.get("/branches").data.decode()).group(1)
+    names = re.findall(r'name="branch-(\d+)" value="([^"]+)"', client.get("/branches").data.decode())
+    places = {"Downtown": "30.0444, 31.2357", "Nasr City": "30.0566, 31.3470", "Zayed": "30.0283, 30.9734"}
+    form = {"csrf_token": token, "action": "save", "base": "Downtown"}
+    for index, name in names:
+        form[f"branch-{index}"] = name
+        form[f"loc-{index}"] = places.get(name, "")
+    client.post("/branches", data=form)
+    page = client.get("/transport-plan").data.decode()
+    assert ("The route" in page or "خط السير" in page) or ("No trip is worth it today" in page or "مفيش مشوار يستاهل" in page)
+    assert "Postponed, and why" in page or "اتأجل، وليه" in page or "trip-stop" in page
+    if "trip-stop" in page:
+        assert "google.com/maps/dir" in page and "wa.me" in page
+    workbook = load_workbook(io.BytesIO(client.get("/transport-plan.xlsx").data))
+    assert len(workbook.worksheets) == 2
+    assert workbook.worksheets[0].max_row >= 2

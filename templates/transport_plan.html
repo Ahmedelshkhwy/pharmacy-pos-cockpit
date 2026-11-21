@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% macro money(value) -%}{{ "{:,.0f}".format(value or 0) }}{%- endmacro %}
+{% macro group_lines(lines, other, verb, joiner, ar) -%}
+{% for branch, items in lines|groupby("transfer." ~ other) %}
+<details class="stop-group"><summary><strong>{{ verb }}</strong> {{ items|length }} {% if ar %}صنف{% else %}items{% endif %} ({{ items|sum(attribute="transfer.qty") }} {% if ar %}قطعة{% else %}units{% endif %}) {{ joiner }} <strong>{{ branch }}</strong></summary>
+<ul>{% for c in items %}<li>{{ c.transfer.item }} × {{ c.transfer.qty }}</li>{% endfor %}</ul>
+</details>
+{% endfor %}
+{%- endmacro %}
+{% macro clock(minutes) -%}{{ (minutes|int) // 60 }}:{{ "%02d" % ((minutes|int) % 60) }}{%- endmacro %}
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+{% endblock %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}على آخر ملفات اترفعت{% else %}From the latest uploaded files{% endif %}</p>
+    <h1>{% if ar %}خطة النقل اليومية{% else %}Daily transport plan{% endif %}</h1>
+    <p class="subtle">{% if ar %}العربية بتلف على أنهي فروع، وبأنهي ترتيب، وتشيل وتنزّل إيه. التحويل بيدخل المشوار لو قيمته أكبر من الكيلومترات الزيادة اللي بيضيفها.{% else %}Which branches the vehicle visits, in which order, and what it loads and unloads. A transfer joins the trip when it is worth more than the extra driving it adds.{% endif %}</p>
+  </div>
+  <a class="button" href="{{ url_for('branches_page') }}">{% if ar %}الفروع والنقل{% else %}Branches & transport{% endif %}</a>
+</section>
+
+{% if plan.excluded %}
+<section class="panel"><p class="message error">
+  {% if ar %}فروع مش داخلة في خطة النهارده:{% else %}Branches left out of today's plan:{% endif %}
+  {% for branch, why in plan.excluded.items() %}<strong>{{ branch }}</strong> ({{ reasons[why][0 if ar else 1] }}{% if why == "stale" and last_upload.get(branch) %}، {% if ar %}آخر رفع{% else %}last upload{% endif %} {{ last_upload[branch][:10] }}{% endif %}){% if not loop.last %}، {% endif %}{% endfor %}.
+  {% if 'no_location' in plan.excluded.values() %}<a href="{{ url_for('branches_page') }}">{% if ar %}حدد أماكنهم{% else %}Set their locations{% endif %}</a>.{% endif %}
+</p></section>
+{% endif %}
+
+{% if plan.status == "no_base" %}
+<section class="panel"><p class="helper-text">{% if ar %}اختار الفرع اللي العربية بتبدأ منه، وحدد أماكن الفروع، من صفحة <a href="{{ url_for('branches_page') }}">الفروع والنقل</a>.{% else %}Choose the branch the vehicle starts from and set branch locations on the <a href="{{ url_for('branches_page') }}">Branches & transport</a> page.{% endif %}</p></section>
+{% elif not transfer_count %}
+<section class="panel"><p class="helper-text">{% if ar %}مفيش تحويلات مقترحة على آخر ملفات. مفيش فرع عنده زيادة من صنف ناقص في فرع تاني.{% else %}No transfers are suggested on the latest files.{% endif %}</p></section>
+{% elif plan.status == "nothing" %}
+<section class="panel insight-card">
+  <h2>{% if ar %}مفيش مشوار يستاهل النهارده{% else %}No trip is worth it today{% endif %}</h2>
+  <p>{% if ar %}كل التحويلات المقترحة يا إما مش مستعجلة، يا إما قيمتها أقل من تكلفة توصيلها. الأسباب تحت.{% else %}Every suggested transfer is either not urgent or worth less than moving it. Reasons below.{% endif %}</p>
+</section>
+{% else %}
+{% if not settings.cost_per_km %}
+<p class="helper-text">{% if ar %}تكلفة الكيلو صفر في الإعدادات، فالمشوار بيتحدد بوقت الوردية بس. اكتب التكلفة الحقيقية علشان الأداة توازن قيمة كل تحويل بتكلفة توصيله.{% else %}Cost per km is zero in settings, so only the shift limits the trip. Enter the real cost so each transfer is weighed against moving it.{% endif %} <a href="{{ url_for('analysis_settings') }}#transport">{{ t("settings") }}</a></p>
+{% endif %}
+<section class="metrics">
+  <article><span>{{ plan.stops|length }}</span><p>{% if ar %}محطة{% else %}stops{% endif %}</p></article>
+  <article><span>{{ '%g' % plan.km }}</span><p>{% if ar %}كيلومتر{% else %}kilometres{% endif %}</p></article>
+  <article><span>{{ clock(plan.minutes) }}</span><p>{% if ar %}من {{ '%g' % settings.shift_hours }} ساعة وردية{% else %}of a {{ '%g' % settings.shift_hours }}-hour shift{% endif %}</p></article>
+  <article><span>{{ plan.carried|length }}/{{ plan.candidates|length }}</span><p>{% if ar %}تحويل في المشوار{% else %}transfers on the trip{% endif %}</p></article>
+  <article><span>{{ money(plan.value) }}</span><p>{% if ar %}قيمة التحويلات{% if settings.cost_per_km %} · تكلفة {{ money(plan.cost) }}{% endif %}{% else %}value carried{% if settings.cost_per_km %} · cost {{ money(plan.cost) }}{% endif %}{% endif %}</p></article>
+</section>
+
+<section class="panel insight-card">
+  <h2>{% if ar %}مقارنة{% else %}Compared with{% endif %}</h2>
+  {% set everything = plan.carried|length == plan.candidates|length - plan.candidates|selectattr("reason", "in", ["stale", "no_location"])|list|length %}
+  {% if ar %}
+  {% if everything %}<p><strong>كل التحويلات داخلة في مشوار النهارده</strong>، والأداة رتّبتها في أقصر لفّة لقتها.</p>{% else %}
+  <p><strong>لو نفّذت كل التحويلات</strong> في مشوار واحد: حوالي {{ '%g' % plan.all_km }} كم و{{ clock(plan.all_minutes) }} ساعة{% if plan.all_minutes > settings.shift_hours * 60 %}، يعني أكتر من الوردية{% endif %}.</p>{% endif %}
+  <p><strong>لو كل فرعين في مشوار لوحده</strong>: {{ plan.separate_trips }} مشوار و{{ '%g' % plan.separate_km }} كم.</p>
+  <p class="good-news">خطة النهارده: مشوار واحد، {{ '%g' % plan.km }} كم، وبيشيل {{ plan.carried|length }} تحويل من {{ plan.candidates|length }}.</p>
+  {% else %}
+  {% if everything %}<p><strong>Every transfer rides on today's trip</strong>, in the shortest tour the tool found.</p>{% else %}
+  <p><strong>Carrying every transfer</strong> in one trip: about {{ '%g' % plan.all_km }} km and {{ clock(plan.all_minutes) }} h{% if plan.all_minutes > settings.shift_hours * 60 %}, longer than the shift{% endif %}.</p>{% endif %}
+  <p><strong>Every branch pair its own trip</strong>: {{ plan.separate_trips }} trips and {{ '%g' % plan.separate_km }} km.</p>
+  <p class="good-news">Today's plan: one trip, {{ '%g' % plan.km }} km, carrying {{ plan.carried|length }} of {{ plan.candidates|length }} transfers.</p>
+  {% endif %}
+  <div class="button-row">
+    {% if maps_link %}<a class="button primary" href="{{ maps_link }}" target="_blank" rel="noopener">{% if ar %}افتح خط السير على جوجل مابس{% else %}Open the route in Google Maps{% endif %}</a>{% endif %}
+    <a class="button" href="{{ whatsapp }}" target="_blank" rel="noopener">{% if ar %}ابعته للسواق واتساب{% else %}Send to the driver on WhatsApp{% endif %}</a>
+    <a class="button" href="{{ url_for('transport_plan_export') }}">{% if ar %}ورقة السواق Excel{% else %}Driver sheet (Excel){% endif %}</a>
+  </div>
+  {% if plan.stops|length > 9 %}<p class="helper-text">{% if ar %}جوجل مابس بيعرض لحد 9 محطات في اللينك الواحد على الموبايل.{% else %}Google Maps shows up to 9 stops per link on phones.{% endif %}</p>{% endif %}
+</section>
+
+<section class="panel"><div id="trip-map" class="branch-map"></div></section>
+
+<section class="section-head"><div><h2>{% if ar %}خط السير{% else %}The route{% endif %}</h2></div></section>
+<ol class="trip-stops">
+  <li class="trip-stop base">
+    <header><span class="stop-number">0</span><div><h3>{{ plan.base }}</h3><small>{% if ar %}نقطة البداية{% else %}start{% endif %}</small></div></header>
+    {{ group_lines(plan.load_at_base, "to_branch", "حمّل" if ar else "Load", "لـ" if ar else "for", ar) }}
+  </li>
+  {% for stop in plan.stops %}
+  <li class="trip-stop">
+    <header><span class="stop-number">{{ loop.index }}</span><div><h3>{{ stop.branch }}</h3><small>{% if ar %}بعد {{ clock(stop.arrive_minute) }} من الخروج{% else %}{{ clock(stop.arrive_minute) }} after leaving{% endif %}</small></div></header>
+    {{ group_lines(stop.drops, "from_branch", "سلّم" if ar else "Drop", "من" if ar else "from", ar) }}
+    {{ group_lines(stop.pickups, "to_branch", "حمّل" if ar else "Load", "لـ" if ar else "for", ar) }}
+  </li>
+  {% endfor %}
+  <li class="trip-stop base">
+    <header><span class="stop-number">↩</span><div><h3>{{ plan.base }}</h3><small>{% if ar %}الرجوع بعد {{ clock(plan.minutes) }}{% else %}back after {{ clock(plan.minutes) }}{% endif %}</small></div></header>
+    {{ group_lines(plan.unload_at_base, "from_branch", "نزّل" if ar else "Unload", "من" if ar else "from", ar) }}
+  </li>
+</ol>
+{% endif %}
+
+{% if plan.left_out and plan.status != "no_base" %}
+<section class="section-head"><div><h2>{% if ar %}اتأجل، وليه{% else %}Postponed, and why{% endif %}</h2></div></section>
+<section class="panel">
+  <table class="compact-table fit-table">
+    <thead><tr><th>{{ t("item") }}</th><th>{% if ar %}من ← إلى{% else %}From → to{% endif %}</th><th>{% if ar %}الكمية{% else %}Qty{% endif %}</th><th>{% if ar %}قيمته{% else %}Value{% endif %}</th><th>{% if ar %}السبب{% else %}Reason{% endif %}</th></tr></thead>
+    <tbody>
+      {% for c in plan.left_out|sort(attribute="value", reverse=True) %}
+      <tr>
+        <td>{{ c.transfer.item }}</td>
+        <td>{{ c.transfer.from_branch }} ← {{ c.transfer.to_branch }}</td>
+        <td>{{ c.transfer.qty }}</td>
+        <td>{{ money(c.value) }}</td>
+        <td><small>{{ reasons[c.reason][0 if ar else 1] }}{% if c.reason in ("not_worth", "no_time") and c.detour_km %} ({% if ar %}+{{ '%g' % c.detour_km }} كم{% if settings.cost_per_km %} ≈ {{ money(c.detour_km * settings.cost_per_km) }}{% endif %}{% else %}+{{ '%g' % c.detour_km }} km{% if settings.cost_per_km %} ≈ {{ money(c.detour_km * settings.cost_per_km) }}{% endif %}{% endif %}){% endif %}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="panel insight-card">
+  <h2>{% if ar %}الخطة بتتحسب إزاي{% else %}How the plan is calculated{% endif %}</h2>
+  {% if ar %}
+  <p><strong>قيمة التحويل</strong> = الخسارة اللي بيمنعها عند الفرع المستلم لحد ما طلبية المورد توصل (احتمال البيع × الربح وخسارة الزبون) + البضاعة اللي صلاحيتها قربت عند الباعت + {{ '%g' % settings.release_value_percent }}% من قيمة الراكد اللي بيتحرك.</p>
+  <p>العربية مالهاش حد للحمولة، فلو رايحة من فرع لفرع بتشيل كل أصنافهم مع بعض. الأداة بتختار الفروع والترتيب اللي يجيبوا أكبر قيمة ناقص تكلفة الكيلومترات، جوه وردية السواق، والتحميل دايماً قبل التسليم. ولو عدّت على فرع مرتين في نفس اليوم بيجيب قيمة أكبر، بتعمل كده.</p>
+  <p class="helper-text">{% if plan.method in ("exact", "exact+") %}الفروع قليلة، فالخطة دي اتثبت إنها الأحسن رياضياً (HiGHS){% if plan.method == "exact+" %}، وزيارة فرع مرتين حسّنتها كمان{% endif %}.{% elif plan.method == "search" %}الفروع كتير، فالخطة دي نتيجة بحث منظّم بعدد خطوات ثابت، فنفس البيانات بتطلّع نفس الخطة دايماً.{% endif %} المسافات تقديرية من الخريطة، إلا اللي اتكتب بالإيد.</p>
+  {% else %}
+  <p><strong>A transfer's value</strong> = the loss it prevents at the receiving branch until a supplier order could arrive (chance of selling × profit and customer loss) + stock about to expire at the sender + {{ '%g' % settings.release_value_percent }}% of the idle stock it moves.</p>
+  <p>The vehicle has no load limit, so going from one branch to another carries all their items together. The tool picks the branches and order with the highest value minus the cost of kilometres, within the driver's shift, always loading before unloading. If visiting a branch twice in a day is worth more, it does that.</p>
+  <p class="helper-text">{% if plan.method in ("exact", "exact+") %}With few branches this plan is proven best (HiGHS){% if plan.method == "exact+" %}, then improved by a second visit{% endif %}.{% elif plan.method == "search" %}With many branches this plan comes from a structured search with a fixed number of steps, so the same data always gives the same plan.{% endif %} Distances are map estimates unless entered by hand.</p>
+  {% endif %}
+</section>
+
+{% if route_points %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function () {
+  var points = {{ route_points|tojson }};
+  var el = document.getElementById("trip-map");
+  if (!window.L || !el || !points.length) { if (el) el.style.display = "none"; return; }
+  var map = L.map(el, { scrollWheelZoom: false });
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }).addTo(map);
+  var line = points.map(function (p) { return [p.lat, p.lng]; });
+  L.polyline(line, { color: "#0f766e", weight: 4, opacity: 0.8 }).addTo(map);
+  var labels = {};
+  points.slice(0, -1).forEach(function (p, i) {
+    var key = p.lat + "," + p.lng;
+    if (!labels[key]) labels[key] = { p: p, numbers: [] };
+    labels[key].numbers.push(i === 0 ? "★" : String(i));
+  });
+  Object.keys(labels).forEach(function (key) {
+    var entry = labels[key];
+    L.marker([entry.p.lat, entry.p.lng]).addTo(map).bindTooltip(entry.numbers.join("، ") + ". " + entry.p.name, { permanent: true, direction: "top", offset: [0, -10] });
+  });
+  map.fitBounds(line, { padding: [40, 40], maxZoom: 14 });
+})();
+</script>
+{% endif %}
+{% endblock %}

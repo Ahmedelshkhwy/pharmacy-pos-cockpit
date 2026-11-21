@@ -40,6 +40,7 @@
         <a href="{{ url_for('index') }}">{{ t("dashboard") }}</a>
         <a class="nav-highlight" href="{{ url_for('profit_loss') }}">{{ t("profit_loss") }}</a>
         <a class="nav-highlight" href="{{ url_for('action_center') }}">{{ t("actions") }}</a>
+        {% if not scoped_user %}<a class="nav-highlight" href="{{ url_for('transport_plan_page') }}">{% if lang == "ar" %}خطة النقل اليومية{% else %}Daily transport plan{% endif %}</a>{% endif %}
         <a class="nav-highlight" href="{{ url_for('budget_plan_page') }}">{% if lang == "ar" %}خطة الشراء بالميزانية{% else %}Budget purchase plan{% endif %}</a>
         <a class="nav-highlight" href="{{ url_for('ask_page') }}">{{ t("ask") }}</a>
         <a href="{{ url_for('report', category='reorder') }}">{{ t("reorder_now") }}</a>
