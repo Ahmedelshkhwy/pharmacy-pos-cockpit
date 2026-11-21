@@ -37,6 +37,7 @@ class AnalysisSettings:
     shift_hours: float = 6.0
     cost_per_km: float = 0.0
     stale_data_days: int = 2
+    release_value_percent: float = 5.0
     # [{"kind": "supplier" | "category", "name": "...", "days": 3}]
     lead_time_overrides: list[dict[str, Any]] = field(default_factory=list)
 
@@ -170,6 +171,9 @@ SETTING_FIELDS = [
     SettingField("cost_per_km", "transport", "تكلفة الكيلو", "Cost per kilometre",
                  "بنزين وصيانة ونصيب السواق. بيه الأداة بتقارن قيمة التحويل بتكلفة توصيله. 0 يعني الوقت بس هو اللي بيحدّ.",
                  "Fuel, upkeep and the driver's share. It lets the tool weigh a transfer's value against the cost of moving it. 0 means only time limits the trip.", 0, 1000, 0.1, "بالعملة", "in currency"),
+    SettingField("release_value_percent", "transport", "قيمة تحريك الراكد", "Value of moving idle stock",
+                 "تحويل بضاعة راكدة أو زيادة لفرع هيبيعها بيوفّر شراء جديد. النسبة دي من قيمة البضاعة بتتحسب مكسب للتحويل حتى لو مفيش نقص مستعجل.",
+                 "Moving idle or surplus stock to a branch that will sell it saves a new purchase. This share of the goods' value counts as the transfer's gain even without an urgent shortage.", 0, 100, 0.5, "%", "%"),
     SettingField("stale_data_days", "transport", "بيانات الفرع قديمة بعد", "Branch data is stale after",
                  "الفرع اللي آخر ملف ليه أقدم من كده مش بيدخل في خطة النقل، علشان رصيده ممكن يكون اتغير.",
                  "A branch whose last file is older than this is left out of the transport plan, since its stock may have changed.", 0, 60),

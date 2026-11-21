@@ -42,7 +42,9 @@
 <section class="section-head"><div>
   <p class="eyebrow">1</p>
   <h2>{% if ar %}حوّل بين الفروع قبل ما تشتري{% else %}Transfer between branches before buying{% endif %}</h2>
-</div></section>
+</div>
+{% if transfers and not scoped_user %}<a class="button" href="{{ url_for('transport_plan_page') }}">{% if ar %}رتّب مشوار النهارده{% else %}Plan today's trip{% endif %}</a>{% endif %}
+</section>
 <section class="panel">
   {% if branch_count < 2 %}
   <p class="helper-text">{% if ar %}التحويلات محتاجة بيانات فرعين على الأقل. ارفع ملفات باقي الفروع علشان الأداة تلاقي زيادة في فرع ونقص في فرع تاني.{% else %}Transfers need at least two branches. Upload the other branches so surplus in one can cover shortage in another.{% endif %}</p>

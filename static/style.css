@@ -1269,3 +1269,15 @@ td small { display: block; }
 .distance-matrix td small { display: block; color: var(--muted); }
 .distance-matrix td.measured { background: rgba(15, 118, 110, 0.12); font-weight: 700; }
 @media (max-width: 700px) { .location-cell { flex-direction: column; align-items: stretch; } }
+.trip-stops { list-style: none; padding: 0; margin: 0 0 1.5rem; display: grid; gap: 0.75rem; }
+.trip-stop { background: var(--surface-strong); border: 1px solid var(--line); border-radius: 14px; padding: 0.9rem 1.1rem; box-shadow: var(--shadow); }
+.trip-stop.base { background: rgba(15, 118, 110, 0.07); }
+.trip-stop header { display: flex; gap: 0.8rem; align-items: center; margin-bottom: 0.3rem; }
+.trip-stop h3 { margin: 0; font-size: 1.05rem; }
+.trip-stop p { margin: 0.25rem 0; }
+.trip-stop small { color: var(--muted); }
+.stop-number { display: inline-grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 800; flex: none; }
+.stop-group { margin: 0.3rem 0; }
+.stop-group summary { cursor: pointer; }
+.stop-group ul { margin: 0.3rem 0 0.5rem; padding-inline-start: 1.4rem; columns: 2; color: var(--muted); font-size: 0.9rem; }
+@media (max-width: 700px) { .stop-group ul { columns: 1; } }
