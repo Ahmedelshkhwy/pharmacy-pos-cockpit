@@ -57,7 +57,7 @@ def test_manager_only_sees_own_branch_everywhere(chain):
 def test_manager_cannot_reach_admin_pages_or_upload_other_branches(chain):
     appmod, _owner = chain
     manager = login(appmod, "zayed_mgr", "password123")
-    for url in ["/settings", "/users", "/data-management"]:
+    for url in ["/settings", "/users", "/data-management", "/branches", "/branches/template.xlsx"]:
         assert manager.get(url).status_code == 403, url
     assert manager.post("/settings", data={"action": "reset"}).status_code == 403
     # The chain file holds three branches: a Zayed manager may not import it.

@@ -1258,3 +1258,14 @@ td small { display: block; }
 .plan-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; align-items: end; }
 .plan-form .wide { grid-column: 1 / -1; }
 .good-news { color: var(--accent); font-weight: 700; }
+.branch-map { height: 380px; border-radius: 14px; overflow: hidden; z-index: 0; }
+.branch-map.picking { outline: 3px solid var(--accent); cursor: crosshair; }
+.location-cell { display: flex; gap: 0.4rem; align-items: center; }
+.location-cell input { flex: 1; min-width: 12rem; }
+.located { color: var(--accent); font-weight: 700; margin-inline-start: 0.35rem; }
+.button.small { padding: 0.35rem 0.7rem; font-size: 0.85rem; }
+.table-scroll { overflow-x: auto; }
+.distance-matrix td, .distance-matrix th { white-space: nowrap; text-align: center; }
+.distance-matrix td small { display: block; color: var(--muted); }
+.distance-matrix td.measured { background: rgba(15, 118, 110, 0.12); font-weight: 700; }
+@media (max-width: 700px) { .location-cell { flex-direction: column; align-items: stretch; } }

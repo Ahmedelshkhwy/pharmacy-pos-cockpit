@@ -1,6 +1,7 @@
 """End-to-end web flow: upload -> review -> analyze -> pages, on an isolated data folder."""
 from __future__ import annotations
 
+import io
 import re
 import sys
 from pathlib import Path
@@ -244,3 +245,45 @@ def test_budget_plan_page_and_excel(client):
             or "الميزانية تكفي كل الطلبيات" in client.get(f"/plan?budget={int(full) + 10}").data.decode())
     # Without a budget the Excel link sends back to the form.
     assert client.get("/plan.xlsx").status_code == 302
+
+
+def test_branches_page_saves_locations_imports_excel_and_measured_distances(client):
+    from openpyxl import Workbook, load_workbook
+
+    submit_review(client, upload(client, [SAMPLES / "D_chain_multi_branch.xlsx"]))
+    page = client.get("/branches").data.decode()
+    assert "Downtown" in page and "Zayed" in page
+    names = re.findall(r'name="branch-(\d+)" value="([^"]+)"', page)
+    token = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+    coords = {"Downtown": "30.0444, 31.2357", "Nasr City": "https://www.google.com/maps/@30.0566,31.3302,15z", "Zayed": "not a place"}
+    form = {"csrf_token": token, "action": "save", "base": "Downtown"}
+    for index, name in names:
+        form[f"branch-{index}"] = name
+        form[f"loc-{index}"] = coords.get(name, "")
+    response = client.post("/branches", data=form, follow_redirects=True)
+    page = response.data.decode()
+    assert "Could not read the location for: Zayed" in page or "معرفتش أقرا المكان لـ: Zayed" in page
+    assert "Distances between branches" in page or "المسافات بين الفروع" in page
+
+    # Excel template lists the branches; filling Zayed and uploading saves it.
+    workbook = load_workbook(io.BytesIO(client.get("/branches/template.xlsx").data))
+    rows = {row[0]: row[1] for row in workbook.active.iter_rows(min_row=2, values_only=True)}
+    assert {"Downtown", "Nasr City", "Zayed"} <= set(rows)
+    filled = Workbook()
+    filled.active.append(["Branch", "Link"])
+    filled.active.append(["Zayed", "https://maps.google.com/?q=30.0283,30.9734"])
+    filled.active.append(["Nowhere", "30.1, 31.1"])
+    data = io.BytesIO()
+    filled.save(data)
+    data.seek(0)
+    page = client.post("/branches", data={"csrf_token": token, "action": "import", "file": (data, "branches.xlsx")},
+                       content_type="multipart/form-data", follow_redirects=True).data.decode()
+    assert "Nowhere" in page
+    assert page.count('class="located"') == 3  # all three branches now have a place
+
+    # A measured distance wins over the map estimate.
+    client.post("/branches", data={"csrf_token": token, "action": "add_distance", "from_branch": "Zayed", "to_branch": "Downtown", "km": "41", "minutes": "75"})
+    page = client.get("/branches").data.decode()
+    assert 'class="measured">41' in page
+    client.post("/branches", data={"csrf_token": token, "action": "delete_distance", "from_branch": "Zayed", "to_branch": "Downtown"})
+    assert 'class="measured">41' not in client.get("/branches").data.decode()

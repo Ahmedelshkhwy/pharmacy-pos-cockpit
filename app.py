@@ -499,6 +499,23 @@ ORG_SCHEMA_SQL = """
             CREATE INDEX IF NOT EXISTS idx_items_sku ON items(sku, branch);
             CREATE INDEX IF NOT EXISTS idx_items_upload ON items(upload_id);
             CREATE INDEX IF NOT EXISTS idx_uploads_branch ON uploads(branch);
+
+            CREATE TABLE IF NOT EXISTS branch_locations (
+                branch TEXT PRIMARY KEY,
+                lat REAL NOT NULL,
+                lng REAL NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                is_base INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS branch_distances (
+                from_branch TEXT NOT NULL,
+                to_branch TEXT NOT NULL,
+                km REAL NOT NULL,
+                minutes REAL NOT NULL,
+                PRIMARY KEY (from_branch, to_branch)
+            );
 """
 
 PLATFORM_SCHEMA_SQL = """
@@ -2665,6 +2682,192 @@ def analysis_settings() -> str | Response:
 
 def owner_count(db: database.Connection) -> int:
     return db.execute("SELECT COUNT(*) FROM users WHERE role = 'owner' AND org_id = ?", (current_org_id(),)).fetchone()[0]
+
+
+def load_branch_locations() -> dict[str, dict[str, Any]]:
+    with get_db() as db:
+        return {row["branch"]: dict(row) for row in db.execute("SELECT * FROM branch_locations")}
+
+
+def load_distance_overrides() -> list[dict[str, Any]]:
+    with get_db() as db:
+        return [dict(row) for row in db.execute("SELECT * FROM branch_distances ORDER BY from_branch, to_branch")]
+
+
+def distance_matrix(settings: Any = None) -> Any:
+    import transport
+
+    settings = settings or load_analysis_settings()
+    locations = {name: (row["lat"], row["lng"]) for name, row in load_branch_locations().items()}
+    overrides = [(o["from_branch"], o["to_branch"], o["km"], o["minutes"]) for o in load_distance_overrides()]
+    return transport.DistanceMatrix(locations, overrides, settings.road_factor, settings.avg_speed_kmh)
+
+
+def location_from_input(text: str) -> tuple[float, float] | None:
+    """Coordinates from what was typed or pasted: a Google Maps link (short links are followed) or "lat, lng"."""
+    import transport
+
+    text = (text or "").strip()
+    found = transport.parse_location(text)
+    if found is None and transport.needs_resolving(text):
+        try:
+            found = transport.parse_location(transport.resolve_link(text))
+        except Exception:  # noqa: BLE001 - a dead or blocked link is reported to the user, not raised
+            logger.info("Could not resolve map link %s", text[:80])
+            found = None
+    return found
+
+
+def save_branch_location(db: Any, branch: str, location: tuple[float, float], source: str) -> None:
+    db.execute(
+        """
+        INSERT INTO branch_locations (branch, lat, lng, source, updated_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(branch) DO UPDATE SET lat = excluded.lat, lng = excluded.lng, source = excluded.source, updated_at = excluded.updated_at
+        """,
+        (branch, round(location[0], 6), round(location[1], 6), source[:500], datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+
+
+def import_branch_locations(file: Any, branches: list[str]) -> tuple[int, list[str], list[str]]:
+    """Excel with the branch name in column A and a map link or "lat, lng" in column B.
+    Returns (saved, unknown branch names, rows whose location could not be read)."""
+    from openpyxl import load_workbook
+
+    by_key = {" ".join(name.lower().split()): name for name in branches}
+    saved, unknown, unreadable = 0, [], []
+    sheet = load_workbook(file, read_only=True, data_only=True).worksheets[0]
+    with get_db() as db:
+        for row in sheet.iter_rows(values_only=True):
+            if not row or row[0] is None:
+                continue
+            name = " ".join(str(row[0]).split())
+            value = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+            branch = by_key.get(name.lower())
+            if branch is None:
+                if value and location_from_input(value):
+                    unknown.append(name)
+                continue  # header rows and empty lines are skipped quietly
+            location = location_from_input(value)
+            if location is None:
+                if value:
+                    unreadable.append(name)
+                continue
+            save_branch_location(db, branch, location, value)
+            saved += 1
+    return saved, unknown, unreadable
+
+
+@app.route("/branches", methods=["GET", "POST"])
+@login_required
+@permission_required("admin")
+def branches_page() -> str | Response:
+    ar = current_language() == "ar"
+    branches = sorted(set(known_branches()) | set(load_branch_locations()))
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "save":
+            failed = []
+            with get_db() as db:
+                for index, branch in enumerate(branches):
+                    text = (request.form.get(f"loc-{index}") or "").strip()
+                    if request.form.get(f"branch-{index}") != branch:
+                        continue
+                    if not text:
+                        db.execute("DELETE FROM branch_locations WHERE branch = ?", (branch,))
+                        continue
+                    location = location_from_input(text)
+                    if location is None:
+                        failed.append(branch)
+                        continue
+                    save_branch_location(db, branch, location, text)
+                base = request.form.get("base") or ""
+                db.execute("UPDATE branch_locations SET is_base = CASE WHEN branch = ? THEN 1 ELSE 0 END", (base,))
+            if failed:
+                flash(("معرفتش أقرا المكان لـ: " if ar else "Could not read the location for: ") + "، ".join(failed), "error")
+            else:
+                flash("اتحفظت أماكن الفروع." if ar else "Branch locations saved.", "success")
+        elif action == "import":
+            upload_file = request.files.get("file")
+            if not upload_file or not upload_file.filename:
+                flash("اختار ملف Excel." if ar else "Choose an Excel file.", "error")
+            else:
+                try:
+                    saved, unknown, unreadable = import_branch_locations(upload_file, branches)
+                except Exception:  # noqa: BLE001 - a broken file is the user's to fix
+                    logger.info("Branch location import failed", exc_info=True)
+                    flash("الملف ده مش Excel سليم." if ar else "That is not a valid Excel file.", "error")
+                else:
+                    flash((f"اتحفظ مكان {saved} فرع." if ar else f"Saved {saved} branch locations."), "success" if saved else "error")
+                    if unknown:
+                        flash(("أسامي مش موجودة في بياناتك: " if ar else "Names not in your data: ") + "، ".join(unknown[:10]), "error")
+                    if unreadable:
+                        flash(("معرفتش أقرا المكان لـ: " if ar else "Could not read the location for: ") + "، ".join(unreadable[:10]), "error")
+        elif action == "add_distance":
+            a, b = request.form.get("from_branch") or "", request.form.get("to_branch") or ""
+            km, minutes = parse_num(request.form.get("km")), parse_num(request.form.get("minutes"))
+            if a in branches and b in branches and a != b and km > 0 and minutes > 0:
+                with get_db() as db:
+                    db.execute(
+                        """
+                        INSERT INTO branch_distances (from_branch, to_branch, km, minutes) VALUES (?, ?, ?, ?)
+                        ON CONFLICT(from_branch, to_branch) DO UPDATE SET km = excluded.km, minutes = excluded.minutes
+                        """,
+                        (a, b, km, minutes),
+                    )
+                flash("اتحفظت المسافة." if ar else "Distance saved.", "success")
+            else:
+                flash("اختار فرعين مختلفين واكتب الكيلومترات والدقايق." if ar else "Pick two different branches and enter kilometres and minutes.", "error")
+        elif action == "delete_distance":
+            with get_db() as db:
+                db.execute("DELETE FROM branch_distances WHERE from_branch = ? AND to_branch = ?",
+                           (request.form.get("from_branch") or "", request.form.get("to_branch") or ""))
+        return redirect(url_for("branches_page"))
+
+    locations = load_branch_locations()
+    settings = load_analysis_settings()
+    matrix = distance_matrix(settings)
+    with get_db() as db:
+        last_upload = {row["branch"]: row["last"] for row in db.execute("SELECT branch, MAX(uploaded_at) AS last FROM uploads GROUP BY branch")}
+    base = next((name for name, row in locations.items() if row["is_base"]), "")
+    return render_template(
+        "branches.html",
+        branches=branches,
+        locations=locations,
+        base=base,
+        matrix=matrix,
+        overrides=load_distance_overrides(),
+        last_upload=last_upload,
+        settings=settings,
+        map_points=[{"name": name, "lat": row["lat"], "lng": row["lng"], "base": bool(row["is_base"])} for name, row in sorted(locations.items())],
+    )
+
+
+@app.route("/branches/template.xlsx")
+@login_required
+@permission_required("admin")
+def branch_locations_template() -> Response:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    ar = current_language() == "ar"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "الفروع" if ar else "Branches"
+    sheet.sheet_view.rightToLeft = ar
+    sheet.append(["الفرع", "لينك جوجل مابس أو الإحداثيات"] if ar else ["Branch", "Google Maps link or coordinates"])
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    locations = load_branch_locations()
+    for branch in sorted(set(known_branches()) | set(locations)):
+        row = locations.get(branch)
+        sheet.append([branch, (row["source"] or f"{row['lat']}, {row['lng']}") if row else ""])
+    sheet.column_dimensions["A"].width = 28
+    sheet.column_dimensions["B"].width = 70
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name="branch_locations.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/users", methods=["GET", "POST"])

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or t("app_name") }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% block head %}{% endblock %}
 </head>
 <body>
   {% set menu_label = "القائمة" if lang == "ar" else "Menu" %}
@@ -66,6 +67,7 @@
         {% if can("admin") %}
         <a href="{{ url_for('analysis_settings') }}">{{ t("settings") }}</a>
         <a href="{{ url_for('users_page') }}">{{ t("users") }}</a>
+        <a href="{{ url_for('branches_page') }}">{{ "الفروع والنقل" if lang == "ar" else "Branches & transport" }}</a>
         <a href="{{ url_for('data_management') }}">{{ t("data_management") }}</a>
         {% endif %}
         {% if can("platform") %}

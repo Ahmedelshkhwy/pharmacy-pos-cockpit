@@ -31,6 +31,12 @@ class AnalysisSettings:
     protect_volume_items: bool = True
     customer_loss_percent: float = 20.0
     supplier_min_order: float = 0.0
+    road_factor: float = 1.3
+    avg_speed_kmh: float = 30.0
+    stop_minutes: int = 10
+    shift_hours: float = 6.0
+    cost_per_km: float = 0.0
+    stale_data_days: int = 2
     # [{"kind": "supplier" | "category", "name": "...", "days": 3}]
     lead_time_overrides: list[dict[str, Any]] = field(default_factory=list)
 
@@ -115,6 +121,7 @@ SETTING_GROUPS = {
     "expiry": ("الصلاحية", "Expiry"),
     "profit": ("الربحية", "Profitability"),
     "forecast": ("حساب معدل البيع", "Sales rate"),
+    "transport": ("النقل بين الفروع", "Transport between branches"),
 }
 
 SETTING_FIELDS = [
@@ -151,6 +158,21 @@ SETTING_FIELDS = [
     SettingField("supplier_min_order", "supply", "أقل طلبية عند المورد", "Supplier minimum order",
                  "في خطة الشراء بالميزانية: طلبية المورد يا إما متتعملش، يا إما تكون بالقيمة دي على الأقل. 0 يعني مفيش حد أدنى. الأصناف اللي مالهاش مورد مش بتتأثر.",
                  "In the budget purchase plan, an order to a supplier is either skipped or at least this value. 0 means no minimum. Items without a supplier are not affected.", 0, 10_000_000, 50, "بالعملة", "in currency"),
+    SettingField("road_factor", "transport", "معامل الطرق", "Road factor",
+                 "الطريق الحقيقي أطول من الخط المستقيم على الخريطة. 1.3 مناسب جوه المدن. أي مسافة تكتبها بإيدك في صفحة الفروع بتغلب الحساب ده.",
+                 "Real roads are longer than the straight line on the map; 1.3 suits cities. Any distance you enter on the branches page wins over this.", 1, 3, 0.05, "×", "×"),
+    SettingField("avg_speed_kmh", "transport", "متوسط سرعة العربية", "Average vehicle speed",
+                 "بيحوّل الكيلومترات لوقت، بالزحمة. 30 كم/ساعة مناسب جوه المدن.", "Turns kilometres into time, traffic included. 30 km/h suits cities.", 5, 120, 1, "كم/ساعة", "km/h"),
+    SettingField("stop_minutes", "transport", "وقت الوقفة عند كل فرع", "Time at each stop",
+                 "التحميل والتسليم والتوقيع عند كل فرع.", "Loading, unloading and signing at each branch.", 0, 120, 1, "دقيقة", "min"),
+    SettingField("shift_hours", "transport", "مدة وردية السواق", "Driver shift",
+                 "أقصى وقت للمشوار اليومي من أول ما العربية تطلع لحد ما ترجع.", "Longest daily trip, from leaving until returning.", 1, 16, 0.5, "ساعة", "hours"),
+    SettingField("cost_per_km", "transport", "تكلفة الكيلو", "Cost per kilometre",
+                 "بنزين وصيانة ونصيب السواق. بيه الأداة بتقارن قيمة التحويل بتكلفة توصيله. 0 يعني الوقت بس هو اللي بيحدّ.",
+                 "Fuel, upkeep and the driver's share. It lets the tool weigh a transfer's value against the cost of moving it. 0 means only time limits the trip.", 0, 1000, 0.1, "بالعملة", "in currency"),
+    SettingField("stale_data_days", "transport", "بيانات الفرع قديمة بعد", "Branch data is stale after",
+                 "الفرع اللي آخر ملف ليه أقدم من كده مش بيدخل في خطة النقل، علشان رصيده ممكن يكون اتغير.",
+                 "A branch whose last file is older than this is left out of the transport plan, since its stock may have changed.", 0, 60),
     SettingField("correct_stockouts", "forecast", "صحّح أيام النقص", "Correct for stockout days",
                  "لما الصنف كان ناقص، الأيام دي متتحسبش ضمن معدل البيع. بيشتغل مع ملفات الفواتير.", "Days the item was out of stock are excluded from its sales rate. Works with invoice files.", kind="bool"),
     SettingField("recency_half_life_days", "forecast", "وزن الأيام الأخيرة", "Recent-days weight (half-life)",
