@@ -29,7 +29,12 @@
   <article><span>{{ "{:,.0f}".format(main.stock or 0) if main else "0" }}</span><p>{{ t("stock") }}</p></article>
   <article><span>{{ "{:,.2f}".format(main.cost_price or 0) if main else "0.00" }}</span><p>{% if lang == "ar" %}تكلفة الوحدة{% else %}Unit cost{% endif %}</p></article>
   <article><span>{{ "{:,.0f}".format(main.stock_value or 0) if main else "0" }}</span><p>{{ t("stock_value") }}</p></article>
+  {% if main and main.gmroi is not none %}<article><span>{{ "{:,.2f}".format(main.gmroi) }}</span><p>{% if lang == "ar" %}العائد على المخزون (GMROI){% else %}Return on stock (GMROI){% endif %}</p></article>{% endif %}
 </section>
+{% if main and main.segment %}
+{% set segment_names = {"star": ("نجم: بيتباع كتير وبيكسب كتير", "Star: sells a lot, earns a lot"), "traffic": ("جاذب زباين: بيتباع كتير وربحه قليل", "Traffic builder: sells a lot, earns little"), "premium": ("غالي ومربح: بيتباع قليل وربحه كبير", "Premium: sells little, earns a lot"), "regular": ("عادي", "Regular"), "weak": ("ضعيف: بيتباع قليل وربحه قليل", "Weak: sells little, earns little")} %}
+<p class="chips"><span>{{ segment_names[main.segment][0 if lang == "ar" else 1] }}</span>{% if main.abc_class %}<span>{% if lang == "ar" %}الربح{% else %}Profit{% endif %}: {{ main.abc_class }}</span>{% endif %}{% if main.volume_class %}<span>{% if lang == "ar" %}الكمية{% else %}Quantity{% endif %}: {{ main.volume_class }}</span>{% endif %}</p>
+{% endif %}
 
 <section class="grid two">
   <article class="panel insight-card">

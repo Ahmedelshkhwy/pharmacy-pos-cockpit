@@ -84,7 +84,7 @@
   <p class="eyebrow">2</p>
   <h2>{% if ar %}طلبيات الشراء حسب المورد{% else %}Purchase orders by supplier{% endif %}</h2>
 </div>
-{% if orders %}<a class="button primary" href="{{ url_for('purchase_orders_export', **branch_args) }}">{% if ar %}نزّل كل الطلبيات Excel{% else %}Download all as Excel{% endif %}</a>{% endif %}
+{% if orders %}<div class="button-row"><a class="button" href="{{ url_for('budget_plan_page', **branch_args) }}">{% if ar %}الميزانية مش مكفية؟ احسب أحسن خطة{% else %}Budget too small? Plan the best purchase{% endif %}</a><a class="button primary" href="{{ url_for('purchase_orders_export', **branch_args) }}">{% if ar %}نزّل كل الطلبيات Excel{% else %}Download all as Excel{% endif %}</a></div>{% endif %}
 </section>
 <section class="driver-list">
   {% for order in orders %}

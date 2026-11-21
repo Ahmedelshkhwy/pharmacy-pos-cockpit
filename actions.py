@@ -273,6 +273,39 @@ def abc_matrix(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+SEGMENT_ORDER = ("star", "traffic", "premium", "regular", "weak")
+
+
+def stock_gmroi(rows: list[dict[str, Any]]) -> float | None:
+    """GMROI of a group of items: yearly gross profit over stock at cost, for items that have both."""
+    priced = [row for row in rows if row.get("gmroi") is not None and num(row.get("cost_value")) > 0]
+    held = sum(num(row.get("cost_value")) for row in priced)
+    return round(sum(num(row.get("gmroi")) * num(row.get("cost_value")) for row in priced) / held, 2) if held else None
+
+
+def segment_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Items grouped by quantity and profit together, with their share of sales, profit and stock."""
+    total_sales = sum(num(row.get("net_sales")) for row in rows) or 1.0
+    total_profit = sum(num(row.get("gross_profit")) for row in rows) or 1.0
+    total_stock = sum(num(row.get("cost_value")) or num(row.get("stock_value")) for row in rows) or 1.0
+    groups = []
+    for segment in SEGMENT_ORDER:
+        members = [row for row in rows if row.get("segment") == segment]
+        if not members:
+            continue
+        stock = sum(num(row.get("cost_value")) or num(row.get("stock_value")) for row in members)
+        groups.append({
+            "segment": segment,
+            "items": len(members),
+            "sales_share": sum(num(row.get("net_sales")) for row in members) / total_sales * 100,
+            "profit_share": sum(num(row.get("gross_profit")) for row in members) / total_profit * 100,
+            "stock_share": stock / total_stock * 100,
+            "stock_value": stock,
+            "gmroi": stock_gmroi(members),
+        })
+    return groups
+
+
 def digest_text(branch: str | None, transfers: list[Transfer], orders: list[PurchaseOrder], expiring: list[dict[str, Any]], fixes: list[dict[str, Any]], lang: str = "ar") -> str:
     """A short plain-text summary to paste into WhatsApp or email."""
     ar = lang == "ar"

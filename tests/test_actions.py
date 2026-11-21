@@ -128,7 +128,8 @@ def test_a_items_get_more_safety_stock(tmp_path):
 
     def reorder_points(settings):
         result = run_smart_import(tables, tmp_path, today=date(2026, 10, 31), settings=settings)
-        return {row["ref"]: (row["abc_class"], float(row["reorder_point"])) for row in csv.DictReader((result.branches[0].output_dir / "merged_items.csv").open(encoding="utf-8-sig"))}
+        rows = csv.DictReader((result.branches[0].output_dir / "merged_items.csv").open(encoding="utf-8-sig"))
+        return {row["ref"]: (settings.service_class(row["abc_class"], row["volume_class"]), float(row["reorder_point"])) for row in rows}
 
     flat = reorder_points(AnalysisSettings(service_level_a=95, service_level_b=95, service_level_c=95))
     tiered = reorder_points(AnalysisSettings())
@@ -138,3 +139,53 @@ def test_a_items_get_more_safety_stock(tmp_path):
                 assert point > flat[ref][1]
             elif abc == "C":
                 assert point < flat[ref][1]
+
+
+def test_service_class_takes_the_higher_of_profit_and_quantity():
+    settings = AnalysisSettings()
+    assert settings.service_class("C", "A") == "A"   # cheap best seller: protected
+    assert settings.service_class("A", "C") == "A"   # pricey slow seller keeps its profit class
+    assert settings.service_class("B", "C") == "B"
+    assert settings.service_class("", "B") == "B"
+    assert AnalysisSettings(protect_volume_items=False).service_class("C", "A") == "C"
+
+
+def test_segments_and_gmroi(tmp_path):
+    from smart_pipeline import gmroi, segment_for
+
+    assert segment_for("A", "A") == "star"
+    assert segment_for("C", "A") == "traffic"
+    assert segment_for("A", "C") == "premium"
+    assert segment_for("C", "C") == "weak"
+    assert segment_for("B", "C") == "regular"
+    assert segment_for("", "") == ""
+    # 900 profit in 90 days on 1,000 of stock at cost = 3.65 a year per 1 held.
+    assert gmroi(900, 1000, 90) == 3.65
+    assert gmroi(900, 0, 90) == ""
+
+    path = SAMPLES / "A_arabic_pharmacy_report.xlsx"
+    result = run_smart_import([(path, spec) for spec in detect_file(path)], tmp_path, today=date(2026, 10, 31), settings=AnalysisSettings())
+    rows = list(csv.DictReader((result.branches[0].output_dir / "merged_items.csv").open(encoding="utf-8-sig")))
+    sold = [row for row in rows if float(row["pos_sales"]) > 0]
+    assert sold and all(row["volume_class"] in "ABC" and row["segment"] for row in sold)
+    assert {"star", "traffic"} & {row["segment"] for row in sold}
+    with_stock = [row for row in sold if row["cost_known"] == "1" and float(row["cost_value"]) > 0]
+    assert with_stock and all(row["gmroi"] != "" for row in with_stock)
+    assert result.branches[0].summary["gmroi"] != ""
+
+
+def test_protecting_volume_items_raises_their_safety_stock(tmp_path):
+    path = SAMPLES / "A_arabic_pharmacy_report.xlsx"
+    tables = [(path, spec) for spec in detect_file(path)]
+
+    def run(protect):
+        out = tmp_path / str(protect)
+        result = run_smart_import(tables, out, today=date(2026, 10, 31), settings=AnalysisSettings(protect_volume_items=protect))
+        return {row["ref"]: row for row in csv.DictReader((result.branches[0].output_dir / "merged_items.csv").open(encoding="utf-8-sig"))}
+
+    on, off = run(True), run(False)
+    traffic = [ref for ref, row in on.items() if row["segment"] == "traffic" and row["abc_class"] == "C" and float(off[ref]["reorder_point"]) > 0]
+    assert traffic, "the sample should have a cheap best seller"
+    assert all(float(on[ref]["reorder_point"]) > float(off[ref]["reorder_point"]) for ref in traffic)
+    others = [ref for ref, row in on.items() if row["volume_class"] in ("", "C") or row["abc_class"] == "A"]
+    assert all(on[ref]["reorder_point"] == off[ref]["reorder_point"] for ref in others)

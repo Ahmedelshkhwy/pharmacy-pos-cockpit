@@ -28,12 +28,25 @@ class AnalysisSettings:
     thin_margin_percent: float = 8.0
     correct_stockouts: bool = True
     recency_half_life_days: int = 30
+    protect_volume_items: bool = True
+    customer_loss_percent: float = 20.0
+    supplier_min_order: float = 0.0
     # [{"kind": "supplier" | "category", "name": "...", "days": 3}]
     lead_time_overrides: list[dict[str, Any]] = field(default_factory=list)
 
-    def safety_z(self, abc_class: str = "") -> float:
+    def service_class(self, abc_class: str = "", volume_class: str = "") -> str:
+        """The class that sets availability: the profit class, or the quantity class when it is higher.
+
+        A low-profit item that sells in large numbers (syringes, paracetamol) brings customers in,
+        so with protect_volume_items it keeps the availability of its quantity class.
+        """
+        if self.protect_volume_items and volume_class and (not abc_class or "ABC".index(volume_class) < "ABC".index(abc_class)):
+            return volume_class
+        return abc_class
+
+    def safety_z(self, abc_class: str = "", volume_class: str = "") -> float:
         """Safety stock factor: A items get the highest availability, C items the lowest."""
-        level = {"A": self.service_level_a, "C": self.service_level_c}.get(abc_class, self.service_level_b)
+        level = {"A": self.service_level_a, "C": self.service_level_c}.get(self.service_class(abc_class, volume_class), self.service_level_b)
         return NormalDist().inv_cdf(level / 100)
 
     def lead_time_for(self, supplier: str, category: str) -> int:
@@ -115,6 +128,9 @@ SETTING_FIELDS = [
                  "الأصناف المتوسطة، والأصناف اللي مالهاش تصنيف.", "Mid items, and items without a class.", 50, 99.9, 0.5, "%", "%"),
     SettingField("service_level_c", "supply", "نسبة التوفر لأصناف C", "Availability for C items",
                  "أصناف C ربحها قليل. نسبة أقل بتقلل الفلوس المتجمدة فيها.", "C items earn little; a lower level frees cash tied up in them.", 50, 99.9, 0.5, "%", "%"),
+    SettingField("protect_volume_items", "supply", "احمِ الأصناف الكتير البيع", "Protect high-volume items",
+                 "صنف بيتباع كميات كبيرة وربحه قليل (زي السرنجة) بيجيب زباين، فياخد نسبة التوفر بتاعة تصنيفه في الكمية لو أعلى من تصنيفه في الربح.",
+                 "An item that sells in large numbers with little profit (like syringes) brings customers in, so it gets the availability of its quantity class when that is higher than its profit class.", kind="bool"),
     SettingField("slow_moving_cover_days", "movement", "بطيء لو الرصيد يغطي أكتر من", "Slow if stock covers more than",
                  "صنف بيتباع بس الرصيد بتاعه يكفي أكتر من المدة دي.", "Item sells but stock lasts longer than this.", 7, 3650),
     SettingField("overstock_cover_days", "movement", "زيادة مخزون لو يغطي أكتر من", "Overstock if stock covers more than",
@@ -129,6 +145,12 @@ SETTING_FIELDS = [
                  "الكميات اللي هتنتهي خلال المدة دي قبل ما تتباع بتتحسب خسارة متوقعة.", "Units expiring within this window before they sell count as expected loss.", 14, 1095),
     SettingField("thin_margin_percent", "profit", "هامش ضعيف لو أقل من", "Thin margin below",
                  "الأصناف الأكثر مبيعاً بهامش أقل من كده بتظهر في الملاحظات.", "Best sellers under this margin are flagged.", 0, 100, 0.5, "%", "%"),
+    SettingField("customer_loss_percent", "profit", "خسارة الزبون لما الصنف يخلص", "Customer loss when an item runs out",
+                 "لما الزبون ميلاقيش الصنف ممكن ميرجعش. الرقم ده نسبة من سعر البيع بتتحسب خسارة فوق الربح الضايع، في خطة الشراء بالميزانية. 0 يعني الربح الضايع بس.",
+                 "A customer who does not find the item may not come back. This share of the sale price counts as a loss on top of the lost profit, in the budget purchase plan. 0 counts lost profit only.", 0, 500, 1, "%", "%"),
+    SettingField("supplier_min_order", "supply", "أقل طلبية عند المورد", "Supplier minimum order",
+                 "في خطة الشراء بالميزانية: طلبية المورد يا إما متتعملش، يا إما تكون بالقيمة دي على الأقل. 0 يعني مفيش حد أدنى. الأصناف اللي مالهاش مورد مش بتتأثر.",
+                 "In the budget purchase plan, an order to a supplier is either skipped or at least this value. 0 means no minimum. Items without a supplier are not affected.", 0, 10_000_000, 50, "بالعملة", "in currency"),
     SettingField("correct_stockouts", "forecast", "صحّح أيام النقص", "Correct for stockout days",
                  "لما الصنف كان ناقص، الأيام دي متتحسبش ضمن معدل البيع. بيشتغل مع ملفات الفواتير.", "Days the item was out of stock are excluded from its sales rate. Works with invoice files.", kind="bool"),
     SettingField("recency_half_life_days", "forecast", "وزن الأيام الأخيرة", "Recent-days weight (half-life)",

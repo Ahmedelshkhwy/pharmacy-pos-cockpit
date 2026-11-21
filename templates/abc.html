@@ -3,6 +3,14 @@
 {% block content %}
 {% set ar = lang == "ar" %}
 {% set row_names = {"A": ("A: بيعملوا 80% من الربح", "A: make 80% of profit"), "B": ("B: الـ15% اللي بعدهم", "B: the next 15%"), "C": ("C: آخر 5%", "C: last 5%"), "-": ("من غير بيع", "No sales")} %}
+{% set segment_names = {
+  "star": ("نجوم", "Stars", "بيتباعوا كتير وبيكسبوا كتير. ممنوع يخلصوا.", "Sell a lot and earn a lot. Must never run out."),
+  "traffic": ("جاذبين زباين", "Traffic builders", "بيتباعوا كتير وربحهم قليل، بس الزبون جاي علشانهم. ممنوع يخلصوا.", "Sell a lot for little profit, but customers come for them. Must never run out."),
+  "premium": ("غاليين ومربحين", "Premium", "بيتباعوا قليل وربحهم كبير. وفّرهم بكمية مظبوطة من غير تكديس.", "Sell little but earn a lot. Keep them in stock without piling up."),
+  "regular": ("عاديين", "Regular", "في النص من ناحية الكمية والربح.", "In the middle on quantity and profit."),
+  "weak": ("ضعاف", "Weak", "بيتباعوا قليل وربحهم قليل. احتياطي قليل، أو بطّل تشتريهم.", "Sell little and earn little. Keep a small reserve, or stop buying."),
+} %}
+{% macro ratio(value) -%}{% if value is none %}—{% else %}{{ "{:,.2f}".format(value) }}{% endif %}{%- endmacro %}
 {% set col_names = {"X": ("X: طلب ثابت", "X: steady demand"), "Y": ("Y: متذبذب", "Y: variable"), "Z": ("Z: متقطع", "Z: erratic"), "-": ("مش معروف", "Unknown")} %}
 <section class="page-head">
   <div>
@@ -46,6 +54,47 @@
   </table>
 </section>
 
+{% if has_segments %}
+<section class="section-head"><div>
+  <h2>{% if ar %}من زاويتين: الكمية والربح{% else %}Two angles: quantity and profit{% endif %}</h2>
+  <p class="subtle">{% if ar %}ABC فوق بيبص على الربح بس، فالسرنجة والبنادول بيطلعوا C. هنا كل صنف بيتشاف بالكمية اللي بتتباع وبالربح مع بعض.{% else %}The ABC grid above looks at profit only, so syringes and paracetamol land in C. Here each item is seen by quantity sold and profit together.{% endif %}</p>
+</div></section>
+<section class="panel insight-card gmroi-card">
+  <div>
+    <h2>{% if ar %}العائد على المخزون (GMROI){% else %}Return on stock (GMROI){% endif %}</h2>
+    <p class="big-number">{{ ratio(overall_gmroi) }}</p>
+    {% if ar %}
+    <p>كل جنيه واقف في المخزون بيرجّع الرقم ده مجمل ربح في السنة. كل ما يعلى فلوسك شغالة أحسن، وأقل من 1 معناه إن ربح السنة كلها أقل من الفلوس الواقفة في الرف. قارن الفروع والمجموعات ببعض.</p>
+    <p class="helper-text">محسوب على الرصيد اللي في الملف، مش متوسط المخزون طول الفترة. ومحتاج تكلفة الشراء.</p>
+    {% else %}
+    <p>Each 1 held in stock earns this much gross profit a year. Higher means your money works harder; below 1 means a whole year of profit is less than the money sitting on the shelf. Compare branches and groups.</p>
+    <p class="helper-text">Based on the stock in the file, not the average over the period. Needs purchase cost.</p>
+    {% endif %}
+  </div>
+</section>
+<section class="panel">
+    <table class="compact-table segment-table">
+      <thead><tr><th>{% if ar %}المجموعة{% else %}Group{% endif %}</th><th>{% if ar %}أصناف{% else %}Items{% endif %}</th><th>{% if ar %}المبيعات{% else %}Sales{% endif %}</th><th>{% if ar %}الربح{% else %}Profit{% endif %}</th><th>{% if ar %}المخزون{% else %}Stock{% endif %}</th><th>GMROI</th></tr></thead>
+      <tbody>
+        {% for group in segments %}
+        {% set names = segment_names[group.segment] %}
+        <tr>
+          <td><strong>{{ names[0 if ar else 1] }}</strong><span class="segment-note">{{ names[2 if ar else 3] }}</span></td>
+          <td>{{ group["items"] }}</td>
+          <td>{{ "{:.0f}".format(group.sales_share) }}%</td>
+          <td>{{ "{:.0f}".format(group.profit_share) }}%</td>
+          <td>{{ "{:.0f}".format(group.stock_share) }}%</td>
+          <td>{{ ratio(group.gmroi) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="helper-text">{% if ar %}{% if settings.protect_volume_items %}الجاذبين زباين بياخدوا نسبة التوفر بتاعة تصنيفهم في الكمية، علشان ميخلصوش.{% else %}حماية الأصناف الكتير البيع مقفولة من الإعدادات، فالجاذبين زباين بياخدوا نسبة التوفر بتاعة ربحهم بس.{% endif %}{% else %}{% if settings.protect_volume_items %}Traffic builders get the availability of their quantity class, so they do not run out.{% else %}Protecting high-volume items is off in settings, so traffic builders get the availability of their profit class only.{% endif %}{% endif %}</p>
+</section>
+{% else %}
+<section class="panel"><p class="helper-text">{% if ar %}التصنيف بالكمية والربح والعائد على المخزون بيتحسبوا مع أي رفع جديد. اضغط "أعد التحليل" من الإعدادات علشان يتحسبوا للملفات اللي اترفعت قبل كده.{% else %}Quantity-and-profit groups and return on stock are computed on new uploads. Use "Re-analyze" in settings to compute them for earlier uploads.{% endif %}</p></section>
+{% endif %}
+
 {% if not has_xyz %}
 <p class="helper-text">{% if ar %}ثبات الطلب (X/Y/Z) محتاج ملف فواتير يوم بيوم. الملفات اللي اترفعت فيها إجماليات بس.{% else %}Demand stability (X/Y/Z) needs an invoice-level file; the uploaded files only have totals.{% endif %}</p>
 {% endif %}
@@ -87,5 +136,31 @@
     </tbody>
   </table>
 </section>
+{% if has_segments %}
+<section class="grid two">
+  <div class="panel">
+    <div class="panel-head"><h2>{% if ar %}جاذبين زباين في خطر نقص{% else %}Traffic builders at stockout risk{% endif %}</h2></div>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{{ t("stock") }}</th><th>{% if ar %}نقص خلال 14 يوم{% else %}Out in 14d{% endif %}</th></tr></thead>
+      <tbody>
+        {% for row in traffic_at_risk %}
+        <tr><td><a class="item-link" href="{{ url_for('product_detail', sku=row.sku, branch=row.branch) }}">{{ row.name }}</a></td>{% if not selected_branch %}<td>{{ row.branch }}</td>{% endif %}<td>{{ row.stock|round(0)|int }}</td><td>{{ "{:.0%}".format(row.stockout_probability_14d) }}</td></tr>
+        {% else %}<tr><td colspan="4" class="empty">{% if ar %}كلهم متغطيين.{% else %}All covered.{% endif %}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>{% if ar %}أقل عائد على الفلوس الواقفة{% else %}Lowest return on money held{% endif %}</h2></div>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{% if ar %}مخزون بالتكلفة{% else %}Stock at cost{% endif %}</th><th>GMROI</th></tr></thead>
+      <tbody>
+        {% for row in low_gmroi %}
+        <tr><td><a class="item-link" href="{{ url_for('product_detail', sku=row.sku, branch=row.branch) }}">{{ row.name }}</a></td>{% if not selected_branch %}<td>{{ row.branch }}</td>{% endif %}<td>{{ money(row.cost_value) }}</td><td>{{ ratio(row.gmroi) }}</td></tr>
+        {% else %}<tr><td colspan="4" class="empty">{{ t("no_data") }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 {% endif %}
 {% endblock %}

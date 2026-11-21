@@ -40,7 +40,7 @@ ITEM_COLUMNS = [
     "lost_profit_value", "frozen_capital_value", "excess_qty", "excess_value", "negative_margin_loss",
     "expiry", "days_left", "expired_qty", "expiry_risk_qty", "expiry_risk_value",
     "base_daily_sales", "unavailable_days", "sales_trend", "trend_ratio", "lead_time_days",
-    "abc_class", "xyz_class", "demand_cv",
+    "abc_class", "xyz_class", "demand_cv", "volume_class", "segment", "gmroi",
     "unit_profit", "gross_margin_percent", "break_even_price", "max_safe_discount_percent",
     "suggested_offer_price", "offer_discount_percent", "offer_profit_per_unit", "offer_profit_if_sold",
     "signal_color", "tags",
@@ -290,6 +290,7 @@ def finalize_item(
     settings: AnalysisSettings,
     weights: DayWeights | None = None,
     abc_class: str = "",
+    volume_class: str = "",
 ) -> dict[str, Any]:
     sales = pick(item, specs, "sales", lambda p: p.has_sales)
     stock = pick(item, specs, "stock", lambda p: p.has_stock)
@@ -341,7 +342,7 @@ def finalize_item(
         lead_time_days=lead_time,
         target_cover_days=settings.target_cover_days,
         overstock_cover_days=settings.overstock_cover_days,
-        safety_z=settings.safety_z(abc_class),
+        safety_z=settings.safety_z(abc_class, volume_class),
     )
     avg_daily = float(metrics["avg_daily_sales"])
     if not coverage["stock"]:
@@ -443,11 +444,41 @@ def finalize_item(
         "abc_class": abc_class,
         "xyz_class": xyz_class,
         "demand_cv": round(demand_cv, 3) if demand_cv is not None else "",
+        "volume_class": volume_class,
+        "segment": segment_for(abc_class, volume_class),
+        "gmroi": gmroi(gross_profit, cost_value, period_days) if cost_known else "",
         "tags": " | ".join(tags) if tags else "normal",
     }
     row.update(metrics)
     row["days_cover"] = metrics["days_cover"]
     return row
+
+
+def gmroi(gross_profit: float, cost_value: float, period_days: int) -> float | str:
+    """Gross margin return on inventory: yearly gross profit per 1 of stock held, at cost.
+
+    The file gives today's stock, not the average over the period, so today's stock stands in for it.
+    Empty when there is no stock to divide by.
+    """
+    if cost_value <= 0 or period_days <= 0:
+        return ""
+    return round(gross_profit * 365 / period_days / cost_value, 2)
+
+
+def segment_for(abc_class: str, volume_class: str) -> str:
+    """Two angles together: profit (abc_class) and quantity sold (volume_class)."""
+    if not abc_class and not volume_class:
+        return ""
+    high_profit, high_volume = abc_class == "A", volume_class == "A"
+    if high_profit and high_volume:
+        return "star"
+    if high_volume:
+        return "traffic"
+    if high_profit:
+        return "premium"
+    if abc_class in ("C", "") and volume_class in ("C", ""):
+        return "weak"
+    return "regular"
 
 
 def abc_classes(items: list[dict[str, Any]], basis: str) -> list[str]:
@@ -568,9 +599,10 @@ def run_smart_import(
         weights = DayWeights(branch.first_tx, period, settings.recency_half_life_days) if period_source == "transactions" else None
         first_pass = [finalize_item(item, branch_name, merger.specs, period, coverage, today, settings, weights) for item in branch.items]
         classes = abc_classes(first_pass, "gross_profit" if coverage["cost"] else "net_sales")
+        volume_classes = abc_classes(first_pass, "pos_sales")
         # Second pass: safety stock depends on the class, and the class depends on every item's result.
         items = [
-            finalize_item(item, branch_name, merger.specs, period, coverage, today, settings, weights, classes[index])
+            finalize_item(item, branch_name, merger.specs, period, coverage, today, settings, weights, classes[index], volume_classes[index])
             for index, item in enumerate(branch.items)
         ]
         branch_quality = Quality()
@@ -596,6 +628,8 @@ def run_smart_import(
         summary["profit_loss"] = analyze_profit_loss(items, period_days=period, coverage=coverage, settings=settings)
         summary["expiry_risk_value"] = round(sum(item["expiry_risk_value"] for item in items), 2)
         summary["gross_profit"] = round(sum(item["gross_profit"] for item in items), 2)
+        stock_at_cost = sum(item["cost_value"] for item in items if item["cost_known"])
+        summary["gmroi"] = gmroi(sum(item["gross_profit"] for item in items), stock_at_cost, period) if coverage["cost"] else ""
 
         output_dir = output_root / f"{branch_slug(branch_name)}_{stamp}"
         suffix = 2
