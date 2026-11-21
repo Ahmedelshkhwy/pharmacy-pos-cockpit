@@ -33,7 +33,7 @@
   <input type="hidden" name="business_type" value="{{ settings.business_type }}">
   <input type="hidden" name="action" value="save">
   {% for group_key, group_labels in groups.items() %}
-  <section class="panel form settings-group">
+  <section class="panel form settings-group" id="{{ group_key }}">
     <h2 class="wide">{{ group_labels[0] if ar else group_labels[1] }}</h2>
     {% for spec in fields if spec.group == group_key %}
     {% set value = settings[spec.key] %}

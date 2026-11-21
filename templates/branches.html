@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+{% endblock %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}مرة واحدة بس{% else %}Set up once{% endif %}</p>
+    <h1>{% if ar %}الفروع والنقل{% else %}Branches & transport{% endif %}</h1>
+    <p class="subtle">{% if ar %}مكان كل فرع، والفرع اللي العربية بتبدأ منه، والمسافات بينهم. الأداة بتستخدمهم علشان تجمّع التحويلات في مشوار واحد وترتّب المحطات.{% else %}Where each branch is, which branch the vehicle starts from, and the distances between them. The tool uses them to group transfers into one trip and order the stops.{% endif %}</p>
+  </div>
+  <a class="button" href="{{ url_for('analysis_settings') }}#transport">{% if ar %}إعدادات العربية{% else %}Vehicle settings{% endif %}</a>
+</section>
+
+<section class="panel">
+  <div id="branch-map" class="branch-map" aria-label="{% if ar %}خريطة الفروع{% else %}Branch map{% endif %}"></div>
+  <p class="helper-text" id="map-hint">{% if ar %}علشان تحدد مكان فرع على الخريطة: دوس "حدد على الخريطة" جنب الفرع، وبعدين دوس على مكانه في الخريطة.{% else %}To set a branch on the map, press "Pick on map" next to it, then click its place on the map.{% endif %}</p>
+</section>
+
+<form method="post" class="panel">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="save">
+  <div class="panel-head">
+    <h2>{% if ar %}أماكن الفروع{% else %}Branch locations{% endif %}</h2>
+    <small class="helper-text">{% if ar %}الزق لينك جوجل مابس بتاع الفرع (حتى اللينك القصير)، أو الإحداثيات زي 30.0444, 31.2357.{% else %}Paste the branch's Google Maps link (short links work too), or coordinates like 30.0444, 31.2357.{% endif %}</small>
+  </div>
+  {% if not branches %}
+  <p class="helper-text">{% if ar %}ارفع ملفات الفروع الأول، وبعدين ارجع هنا.{% else %}Upload branch files first, then come back here.{% endif %}</p>
+  {% else %}
+  <table class="compact-table branch-table">
+    <thead><tr>
+      <th>{{ t("branch") }}</th>
+      <th>{% if ar %}المكان{% else %}Location{% endif %}</th>
+      <th>{% if ar %}العربية بتبدأ منه{% else %}Vehicle starts here{% endif %}</th>
+      <th>{% if ar %}آخر رفع{% else %}Last upload{% endif %}</th>
+    </tr></thead>
+    <tbody>
+      {% for branch in branches %}
+      {% set loc = locations.get(branch) %}
+      <tr>
+        <td><strong>{{ branch }}</strong>{% if loc %}<span class="located">✓</span>{% endif %}<input type="hidden" name="branch-{{ loop.index0 }}" value="{{ branch }}"></td>
+        <td>
+          <div class="location-cell">
+            <input name="loc-{{ loop.index0 }}" id="loc-{{ loop.index0 }}" value="{{ (loc.source or '%s, %s' % (loc.lat, loc.lng)) if loc else '' }}" placeholder="https://maps.app.goo.gl/…" dir="ltr">
+            <button class="button small" type="button" data-pick="{{ loop.index0 }}" data-name="{{ branch }}">{% if ar %}حدد على الخريطة{% else %}Pick on map{% endif %}</button>
+          </div>
+        </td>
+        <td><input type="radio" name="base" value="{{ branch }}" {% if base == branch %}checked{% endif %} aria-label="{{ branch }}"></td>
+        <td><small>{{ (last_upload.get(branch) or '—')[:16] }}</small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <button class="button primary" type="submit">{% if ar %}احفظ الأماكن{% else %}Save locations{% endif %}</button>
+  {% endif %}
+</form>
+
+<section class="grid two">
+  <form method="post" enctype="multipart/form-data" class="panel form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="import">
+    <h2 class="wide">{% if ar %}كل الفروع مرة واحدة من Excel{% else %}All branches at once from Excel{% endif %}</h2>
+    <p class="helper-text wide">{% if ar %}نزّل الملف، اكتب لينك جوجل مابس جنب كل فرع، وارفعه تاني.{% else %}Download the file, put each branch's Google Maps link next to it, and upload it back.{% endif %}</p>
+    <a class="button wide" href="{{ url_for('branch_locations_template') }}">{% if ar %}نزّل الملف{% else %}Download the file{% endif %}</a>
+    <label><span>{% if ar %}الملف بعد ما تملاه{% else %}The filled file{% endif %}</span><input type="file" name="file" accept=".xlsx"></label>
+    <button class="button primary wide" type="submit">{% if ar %}ارفع الأماكن{% else %}Upload locations{% endif %}</button>
+  </form>
+
+  <form method="post" class="panel form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add_distance">
+    <h2 class="wide">{% if ar %}مسافة تعرفها بالظبط{% else %}A distance you know exactly{% endif %}</h2>
+    <p class="helper-text wide">{% if ar %}لو مشوار معين أطول من حساب الخريطة (زحمة، كوبري، طريق واحد اتجاه)، اكتبه هنا وهيغلب الحساب.{% else %}If a trip is longer than the map estimate (traffic, a bridge, one-way roads), enter it here and it wins.{% endif %}</p>
+    <label><span>{% if ar %}من{% else %}From{% endif %}</span><select name="from_branch">{% for b in branches %}<option>{{ b }}</option>{% endfor %}</select></label>
+    <label><span>{% if ar %}إلى{% else %}To{% endif %}</span><select name="to_branch">{% for b in branches %}<option {% if loop.index == 2 %}selected{% endif %}>{{ b }}</option>{% endfor %}</select></label>
+    <label><span>{% if ar %}كيلومتر{% else %}Kilometres{% endif %}</span><input name="km" inputmode="decimal" required></label>
+    <label><span>{% if ar %}دقيقة{% else %}Minutes{% endif %}</span><input name="minutes" inputmode="decimal" required></label>
+    <button class="button primary wide" type="submit">{% if ar %}احفظ المسافة{% else %}Save distance{% endif %}</button>
+  </form>
+</section>
+
+{% if overrides %}
+<section class="panel">
+  <div class="panel-head"><h2>{% if ar %}المسافات اللي اتكتبت بالإيد{% else %}Distances entered by hand{% endif %}</h2></div>
+  <table class="compact-table fit-table">
+    <thead><tr><th>{% if ar %}من{% else %}From{% endif %}</th><th>{% if ar %}إلى{% else %}To{% endif %}</th><th>{% if ar %}كم{% else %}km{% endif %}</th><th>{% if ar %}دقيقة{% else %}min{% endif %}</th><th></th></tr></thead>
+    <tbody>
+      {% for o in overrides %}
+      <tr><td>{{ o.from_branch }}</td><td>{{ o.to_branch }}</td><td>{{ '%g' % o.km }}</td><td>{{ '%g' % o.minutes }}</td>
+        <td><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete_distance"><input type="hidden" name="from_branch" value="{{ o.from_branch }}"><input type="hidden" name="to_branch" value="{{ o.to_branch }}"><button class="button small danger" type="submit">{% if ar %}امسح{% else %}Delete{% endif %}</button></form></td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if matrix.branches|length >= 2 %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>{% if ar %}المسافات بين الفروع{% else %}Distances between branches{% endif %}</h2>
+    <small class="helper-text">{% if ar %}كيلومتر · دقايق سواقة. محسوبة بالخط المستقيم × {{ '%g' % settings.road_factor }} وسرعة {{ '%g' % settings.avg_speed_kmh }} كم/ساعة. الخانة الملوّنة اتكتبت بالإيد.{% else %}Kilometres · driving minutes, from the straight line × {{ '%g' % settings.road_factor }} at {{ '%g' % settings.avg_speed_kmh }} km/h. Highlighted cells were entered by hand.{% endif %}</small>
+  </div>
+  <div class="table-scroll">
+    <table class="compact-table distance-matrix">
+      <thead><tr><th>{% if ar %}من ↓ إلى ←{% else %}From ↓ to →{% endif %}</th>{% for b in matrix.branches %}<th>{{ b }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for a in matrix.branches %}
+        <tr><th>{{ a }}</th>
+          {% for b in matrix.branches %}
+          {% if a == b %}<td class="empty-cell">—</td>{% else %}{% set leg = matrix.leg(a, b) %}<td class="{{ 'measured' if leg.measured }}">{{ '%g' % leg.km }}<small>{{ '%g' % leg.minutes }} {% if ar %}د{% else %}min{% endif %}</small></td>{% endif %}
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% elif locations %}
+<section class="panel"><p class="helper-text">{% if ar %}حدد مكان فرعين على الأقل علشان تظهر المسافات.{% else %}Set at least two branches to see distances.{% endif %}</p></section>
+{% endif %}
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function () {
+  var points = {{ map_points|tojson }};
+  var el = document.getElementById("branch-map");
+  if (!window.L || !el) { if (el) el.style.display = "none"; return; }
+  var map = L.map(el, { scrollWheelZoom: false });
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }).addTo(map);
+  var markers = {};
+  function place(name, lat, lng, base) {
+    if (markers[name]) { markers[name].setLatLng([lat, lng]); return; }
+    markers[name] = L.marker([lat, lng], { title: name }).addTo(map).bindTooltip(name + (base ? " ★" : ""), { permanent: true, direction: "top", offset: [0, -10] });
+  }
+  points.forEach(function (p) { place(p.name, p.lat, p.lng, p.base); });
+  if (points.length) {
+    map.fitBounds(points.map(function (p) { return [p.lat, p.lng]; }), { padding: [40, 40], maxZoom: 14 });
+  } else {
+    map.setView([27.5, 39.0], 5);  // Egypt and Saudi Arabia in view
+  }
+  var picking = null;
+  var hint = document.getElementById("map-hint");
+  var hintText = hint.textContent;
+  document.querySelectorAll("[data-pick]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      picking = { index: button.getAttribute("data-pick"), name: button.getAttribute("data-name") };
+      hint.textContent = ({{ ar|tojson }} ? "دوس على مكان " : "Click the place of ") + picking.name + ({{ ar|tojson }} ? " في الخريطة." : " on the map.");
+      el.classList.add("picking");
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
+  map.on("click", function (event) {
+    if (!picking) return;
+    var lat = event.latlng.lat.toFixed(6), lng = event.latlng.lng.toFixed(6);
+    document.getElementById("loc-" + picking.index).value = lat + ", " + lng;
+    place(picking.name, +lat, +lng, false);
+    hint.textContent = ({{ ar|tojson }} ? "اتحدد مكان " : "Placed ") + picking.name + ({{ ar|tojson }} ? ". متنساش تدوس احفظ الأماكن." : ". Remember to press Save locations.");
+    picking = null;
+    el.classList.remove("picking");
+  });
+})();
+</script>
+{% endblock %}
