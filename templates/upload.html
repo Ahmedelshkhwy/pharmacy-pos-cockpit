@@ -19,7 +19,7 @@
 
   <label>
     <span>{% if lang == "ar" %}اسم الفرع (اختياري){% else %}Branch name (optional){% endif %}</span>
-    <input name="branch" list="branch-list" maxlength="60" placeholder="{% if lang == 'ar' %}مثال: فرع المعادي{% else %}e.g. Downtown{% endif %}">
+    <input name="branch" list="branch-list" maxlength="60" placeholder="{% if lang == 'ar' %}مثال: فرع الياسمين{% else %}e.g. North branch{% endif %}">
     <datalist id="branch-list">
       {% for branch in branch_choices %}<option value="{{ branch }}">{% endfor %}
     </datalist>

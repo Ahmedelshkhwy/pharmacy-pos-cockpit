@@ -116,7 +116,7 @@
         <td>{{ money(line.full_value - line.avoided) }}</td>
         <td><small>
           {% if line.qty == 0 and plan.supplier_skipped(line) %}{% if ar %}طلبية المورد كلها أقل من الحد الأدنى{% else %}The whole supplier order is under the minimum{% endif %}
-          {% elif line.qty == 0 %}{% if ar %}كل جنيه فيه بيمنع خسارة أقل من اللي اتشرى{% else %}Each unit of money here prevents less loss than what was bought{% endif %}
+          {% elif line.qty == 0 %}{% if ar %}الفلوس دي بتمنع خسارة أقل لو اتصرفت عليه بدل اللي اتشرى{% else %}Each unit of money here prevents less loss than what was bought{% endif %}
           {% else %}{% if ar %}الباقي احتمال بيعه قبل الطلبية الجاية أقل{% else %}The rest is less likely to sell before the next order{% endif %}{% endif %}
         </small></td>
       </tr>
