@@ -1916,6 +1916,7 @@ def action_plan(branch: str | None = None) -> dict[str, Any]:
         "fixes": fixes,
         "stop_list": action_plans.stop_buying(branch_rows),
         "branch_count": len({row["branch"] for row in rows}),
+        "item_rows": rows,
         "digest": action_plans.digest_text(branch, transfers, orders, expiring, fixes, current_language()) + digest_footer(),
     }
 
@@ -2029,6 +2030,84 @@ def transfers_export() -> Response:
     workbook.save(output)
     output.seek(0)
     name = f"transfers_{branch_slug(branch) if branch else 'all'}_{date.today().isoformat()}.xlsx"
+    return send_file(output, as_attachment=True, download_name=name, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+def budget_plan_request(branch: str | None) -> tuple[Any, dict[str, Any], float | None, float]:
+    """Read the plan form: (plan or None, action plan, budget, minimum order)."""
+    import budget_plan
+
+    settings = load_analysis_settings()
+    data = action_plan(branch)
+    raw_budget = (request.args.get("budget") or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")).strip()
+    raw_min = (request.args.get("min_order") or "").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")).strip()
+    min_order = max(parse_num(raw_min), 0.0) if raw_min else settings.supplier_min_order
+    budget = max(parse_num(raw_budget), 0.0) if raw_budget else None
+    plan = budget_plan.plan(data["orders"], data["item_rows"], settings, budget, min_order) if budget is not None else None
+    return plan, data, budget, min_order
+
+
+@app.route("/plan")
+@login_required
+def budget_plan_page() -> str:
+    branch = selected_branch(request.args.get("branch"))
+    plan, data, budget, min_order = budget_plan_request(branch)
+    full_cost = sum(order.value for order in data["orders"])
+    return render_template(
+        "plan.html",
+        plan=plan,
+        budget=budget,
+        min_order=min_order,
+        full_cost=full_cost,
+        transfer_count=len(data["transfers"]),
+        settings=load_analysis_settings(),
+        selected_branch=branch,
+        branch_options=branch_options(),
+        branch_args=branch_query_args(branch),
+    )
+
+
+@app.route("/plan.xlsx")
+@login_required
+def budget_plan_export() -> Response:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
+    branch = selected_branch(request.args.get("branch"))
+    plan, _data, budget, _min_order = budget_plan_request(branch)
+    if plan is None:
+        return redirect(url_for("budget_plan_page", **branch_query_args(branch)))
+    ar = current_language() == "ar"
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    headers = (["الكود", "الصنف", "الكمية", "المقترح", "تكلفة الوحدة", "الإجمالي", "خسارة متوقعة اتمنعت"] if ar
+               else ["Code", "Item", "Qty", "Suggested", "Unit cost", "Total", "Expected loss prevented"])
+    for group in plan.order_groups():
+        title = re.sub(r"[\\/*?:\[\]]", " ", f"{group['branch']} - {group['supplier'] or ('بدون مورد' if ar else 'No supplier')}")[:28].strip()
+        while title in workbook.sheetnames:
+            title = title[:26] + str(len(workbook.sheetnames))
+        sheet = workbook.create_sheet(title)
+        sheet.sheet_view.rightToLeft = ar
+        sheet.append(headers)
+        for line in group["lines"]:
+            sheet.append([line.sku, line.name, line.qty, line.suggested, round(line.unit_cost, 2), round(line.cost, 2), round(line.avoided, 2)])
+        sheet.append([])
+        sheet.append(["", "الإجمالي" if ar else "Total", sum(l.qty for l in group["lines"]), "", "", round(group["value"], 2), round(sum(l.avoided for l in group["lines"]), 2)])
+        sheet.column_dimensions["B"].width = 34
+    postponed = workbook.create_sheet("اتأجل" if ar else "Postponed")
+    postponed.sheet_view.rightToLeft = ar
+    postponed.append(["الكود", "الصنف", "الفرع", "المورد", "اتأجل", "تكلفة المتأجل", "خسارة متوقعة متمنعتش"] if ar
+                     else ["Code", "Item", "Branch", "Supplier", "Postponed qty", "Cost of postponed", "Expected loss not prevented"])
+    for line in plan.postponed:
+        rest = line.suggested - line.qty
+        postponed.append([line.sku, line.name, line.branch, line.supplier, rest, round(rest * line.unit_cost, 2), round(line.full_value - line.avoided, 2)])
+    for cell in [*postponed[1]] + [c for ws in workbook.worksheets for c in ws[1]]:
+        cell.font = Font(bold=True)
+    postponed.column_dimensions["B"].width = 34
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    name = f"budget_plan_{branch_slug(branch) if branch else 'all'}_{int(budget or 0)}_{date.today().isoformat()}.xlsx"
     return send_file(output, as_attachment=True, download_name=name, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 

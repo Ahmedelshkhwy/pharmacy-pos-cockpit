@@ -1254,3 +1254,7 @@ td small { display: block; }
 .segment-note { display: block; color: var(--muted); font-size: 0.85rem; font-weight: 400; margin-top: 0.15rem; }
 .gmroi-card .big-number { color: var(--accent); }
 @media (max-width: 700px) { .segment-table td:first-child { min-width: 0; } .segment-note { display: none; } .segment-table th, .segment-table td { padding-inline: 0.3rem; } }
+.button-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.plan-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; align-items: end; }
+.plan-form .wide { grid-column: 1 / -1; }
+.good-news { color: var(--accent); font-weight: 700; }

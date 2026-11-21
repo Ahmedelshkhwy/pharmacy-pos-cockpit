@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% macro money(value) -%}{{ "{:,.0f}".format(value or 0) }}{%- endmacro %}
+{% block content %}
+{% set ar = lang == "ar" %}
+<section class="page-head">
+  <div>
+    <p class="eyebrow">{% if ar %}من التحليل لقرار{% else %}From analysis to a decision{% endif %}</p>
+    <h1>{% if ar %}خطة الشراء بالميزانية{% else %}Budget purchase plan{% endif %}{% if selected_branch %} · {{ selected_branch }}{% endif %}</h1>
+    <p class="subtle">{% if ar %}لما فلوسك مش مكفية كل الطلبيات، الأداة بتختار تشتري إيه وتأجل إيه، علشان تمنع أكبر خسارة ممكنة من النقص بنفس الفلوس. التحويلات بين الفروع محسوبة الأول، لأنها ببلاش.{% else %}When the money does not cover every order, the tool picks what to buy and what to postpone so the same money prevents the most loss from stockouts. Transfers between branches come first because they are free.{% endif %}</p>
+  </div>
+</section>
+
+<form class="panel form plan-form" method="get">
+  <label>
+    <span>{% if ar %}الميزانية المتاحة{% else %}Available budget{% endif %}</span>
+    <input type="text" inputmode="decimal" name="budget" value="{{ '%g' % budget if budget is not none else '' }}" required placeholder="{% if ar %}مثال: 50000{% else %}e.g. 50000{% endif %}">
+    <small class="helper-text">{% if ar %}الطلبيات المقترحة كلها بـ {{ money(full_cost) }}.{% else %}All suggested orders cost {{ money(full_cost) }}.{% endif %}</small>
+  </label>
+  <label>
+    <span>{% if ar %}أقل طلبية عند المورد{% else %}Supplier minimum order{% endif %}</span>
+    <input type="text" inputmode="decimal" name="min_order" value="{{ '%g' % min_order }}">
+    <small class="helper-text">{% if ar %}0 يعني مفيش حد أدنى. القيمة الافتراضية من الإعدادات.{% else %}0 means no minimum. The default comes from settings.{% endif %}</small>
+  </label>
+  {% if branch_options|length > 1 or scoped_user %}
+  <label>
+    <span>{{ t("branch_filter") }}</span>
+    <select name="branch">
+      {% if not scoped_user %}<option value="all">{{ t("all_branches") }}</option>{% endif %}
+      {% for branch in branch_options %}<option value="{{ branch }}" {% if selected_branch == branch %}selected{% endif %}>{{ branch }}</option>{% endfor %}
+    </select>
+  </label>
+  {% endif %}
+  <button class="button primary wide" type="submit">{% if ar %}احسب أحسن خطة{% else %}Calculate the best plan{% endif %}</button>
+</form>
+
+{% if plan %}
+{% if plan.status == "empty" %}
+<section class="panel"><p class="helper-text">{% if ar %}مفيش طلبيات شراء مقترحة دلوقتي{% if transfer_count %}، والتحويلات بين الفروع مغطية الاحتياج{% endif %}.{% else %}No purchase orders are suggested right now{% if transfer_count %}; transfers between branches cover the need{% endif %}.{% endif %}</p></section>
+{% elif plan.status == "failed" %}
+<section class="panel"><p class="message error">{% if ar %}معرفتش أحسب الخطة. جرّب ميزانية تانية.{% else %}The plan could not be calculated. Try another budget.{% endif %}</p></section>
+{% else %}
+{% set prevented = plan.avoided / plan.full_avoided * 100 if plan.full_avoided else 100 %}
+<section class="metrics">
+  <article><span>{{ money(plan.spent) }}</span><p>{% if ar %}هتصرف من {{ money(plan.budget) }}{% else %}spent of {{ money(plan.budget) }}{% endif %}</p></article>
+  <article><span>{{ "{:.0f}".format(prevented) }}%</span><p>{% if ar %}من الخسارة المتوقعة اتمنعت{% else %}of expected loss prevented{% endif %}</p></article>
+  <article><span>{{ plan.bought|length }}</span><p>{% if ar %}صنف هيتشرى{% else %}items to buy{% endif %}</p></article>
+  <article><span>{{ plan.postponed|length }}</span><p>{% if ar %}صنف اتأجل كله أو جزء منه{% else %}items fully or partly postponed{% endif %}</p></article>
+</section>
+
+<section class="panel insight-card">
+  {% if plan.status == "covers_all" %}
+  <h2>{% if ar %}الميزانية تكفي كل الطلبيات{% else %}The budget covers every order{% endif %}</h2>
+  <p>{% if ar %}كل الطلبيات المقترحة بـ {{ money(plan.full_cost) }}، فاشتريها زي ما هي.{% else %}All suggested orders cost {{ money(plan.full_cost) }}, so buy them as they are.{% endif %}</p>
+  {% else %}
+  <h2>{% if ar %}مقارنة بالشراء بالترتيب العادي{% else %}Compared with buying in the usual order{% endif %}</h2>
+  {% set gain = plan.avoided - plan.priority_avoided %}
+  {% if ar %}
+  <p>الخطة دي بتمنع خسارة متوقعة <strong>{{ money(plan.avoided) }}</strong> من أصل {{ money(plan.full_avoided) }} لو كنت اشتريت كل حاجة.
+     لو اشتريت بترتيب الأولوية (العاجل الأول) لحد ما الفلوس تخلص، كنت هتمنع {{ money(plan.priority_avoided) }} بس{% if plan.min_order_active %}، بعد ما تشيل الطلبيات اللي تحت الحد الأدنى للمورد{% endif %}.</p>
+  {% if gain > 0.5 %}<p class="good-news">يعني نفس الفلوس بتمنع {{ money(gain) }} خسارة زيادة.</p>{% else %}<p>الترتيب العادي كان هيوصل لنفس النتيجة تقريباً بالميزانية دي.</p>{% endif %}
+  {% else %}
+  <p>This plan prevents an expected loss of <strong>{{ money(plan.avoided) }}</strong> out of {{ money(plan.full_avoided) }} if you bought everything.
+     Buying in priority order (urgent first) until the money runs out would prevent {{ money(plan.priority_avoided) }}{% if plan.min_order_active %}, after dropping orders under the supplier minimum{% endif %}.</p>
+  {% if gain > 0.5 %}<p class="good-news">The same money prevents {{ money(gain) }} more loss.</p>{% else %}<p>The usual order would reach about the same result with this budget.</p>{% endif %}
+  {% endif %}
+  {% endif %}
+  {% if plan.status == "time_limit" %}<p class="helper-text">{% if ar %}الحساب وقف عند الحد الزمني، فالخطة دي أحسن حل لقاه، وممكن تكون مش الأحسن بالظبط.{% else %}The calculation hit its time limit; this is the best plan found, possibly not the exact best.{% endif %}</p>{% endif %}
+  <a class="button primary" href="{{ url_for('budget_plan_export', budget='%g' % budget, min_order='%g' % min_order, **branch_args) }}">{% if ar %}نزّل الخطة Excel{% else %}Download the plan as Excel{% endif %}</a>
+</section>
+
+<section class="section-head"><div>
+  <p class="eyebrow">1</p>
+  <h2>{% if ar %}اشتري{% else %}Buy{% endif %}</h2>
+</div></section>
+<section class="driver-list">
+  {% for group in plan.order_groups() %}
+  <article class="driver-card info">
+    <header>
+      <div><h3>{{ group.supplier or ("بدون مورد" if ar else "No supplier") }} · {{ group.branch }}</h3>
+        <small>{{ group.lines|length }} {% if ar %}صنف{% else %}items{% endif %}</small></div>
+      <strong>{{ money(group.value) }}</strong>
+    </header>
+    <table class="compact-table fit-table">
+      <thead><tr><th>{{ t("item") }}</th><th>{% if ar %}الكمية{% else %}Qty{% endif %}</th><th>{% if ar %}التكلفة{% else %}Cost{% endif %}</th><th>{% if ar %}خسارة اتمنعت{% else %}Loss prevented{% endif %}</th></tr></thead>
+      <tbody>
+        {% for line in group.lines %}
+        <tr>
+          <td>{{ line.name }}{% if line.abc_class %} <span class="abc-badge abc-{{ line.abc_class }}">{{ line.abc_class }}</span>{% endif %}</td>
+          <td>{{ line.qty }}{% if line.qty < line.suggested %}<small>{% if ar %}من {{ line.suggested }} مقترح{% else %}of {{ line.suggested }} suggested{% endif %}</small>{% endif %}</td>
+          <td>{{ money(line.cost) }}</td>
+          <td>{{ money(line.avoided) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+  {% else %}
+  <section class="panel"><p class="helper-text">{% if ar %}الميزانية مش كفاية لأي طلبية.{% else %}The budget is not enough for any order.{% endif %}</p></section>
+  {% endfor %}
+</section>
+
+{% if plan.postponed %}
+<section class="section-head"><div>
+  <p class="eyebrow">2</p>
+  <h2>{% if ar %}اتأجل، وليه{% else %}Postponed, and why{% endif %}</h2>
+</div></section>
+<section class="panel">
+  <table class="compact-table fit-table">
+    <thead><tr><th>{{ t("item") }}</th>{% if not selected_branch %}<th>{{ t("branch") }}</th>{% endif %}<th>{% if ar %}اتأجل{% else %}Postponed{% endif %}</th><th>{% if ar %}خسارة متوقعة متمنعتش{% else %}Loss not prevented{% endif %}</th><th>{% if ar %}السبب{% else %}Reason{% endif %}</th></tr></thead>
+    <tbody>
+      {% for line in plan.postponed[:60] %}
+      <tr>
+        <td>{{ line.name }}{% if line.abc_class %} <span class="abc-badge abc-{{ line.abc_class }}">{{ line.abc_class }}</span>{% endif %}</td>
+        {% if not selected_branch %}<td>{{ line.branch }}</td>{% endif %}
+        <td>{{ line.suggested - line.qty }}{% if line.qty %}<small>{% if ar %}من {{ line.suggested }}{% else %}of {{ line.suggested }}{% endif %}</small>{% endif %}</td>
+        <td>{{ money(line.full_value - line.avoided) }}</td>
+        <td><small>
+          {% if line.qty == 0 and plan.supplier_skipped(line) %}{% if ar %}طلبية المورد كلها أقل من الحد الأدنى{% else %}The whole supplier order is under the minimum{% endif %}
+          {% elif line.qty == 0 %}{% if ar %}كل جنيه فيه بيمنع خسارة أقل من اللي اتشرى{% else %}Each unit of money here prevents less loss than what was bought{% endif %}
+          {% else %}{% if ar %}الباقي احتمال بيعه قبل الطلبية الجاية أقل{% else %}The rest is less likely to sell before the next order{% endif %}{% endif %}
+        </small></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if plan.postponed|length > 60 %}<p class="helper-text">{% if ar %}و{{ plan.postponed|length - 60 }} صنف تاني في ملف الإكسل.{% else %}And {{ plan.postponed|length - 60 }} more in the Excel file.{% endif %}</p>{% endif %}
+</section>
+{% endif %}
+{% endif %}
+{% endif %}
+
+<section class="panel insight-card">
+  <h2>{% if ar %}الخطة بتتحسب إزاي{% else %}How the plan is calculated{% endif %}</h2>
+  {% if ar %}
+  <p>كل قطعة مقترحة ليها قيمة: <strong>احتمال إنها تتباع قبل الطلبية الجاية × (ربحها + خسارة الزبون)</strong>. أول قطع من صنف هيخلص قيمتها عالية، وآخر قطع من صنف مكفي قيمتها قليلة.</p>
+  <p>بعدها برنامج حل رياضي (HiGHS) بيختار القطع اللي مجموع قيمتها أكبر ما يمكن، من غير ما يعدّي الميزانية، ومن غير طلبية لمورد أقل من الحد الأدنى.</p>
+  <p class="helper-text">خسارة الزبون محسوبة {{ '%g' % settings.customer_loss_percent }}% من سعر البيع، ومدة الطلبية = مدة التوريد + {{ settings.target_cover_days }} يوم تغطية. تقدر تغيّرهم من <a href="{{ url_for('analysis_settings') }}">الإعدادات</a>.</p>
+  {% else %}
+  <p>Every suggested unit has a value: <strong>the chance it sells before the next order × (its profit + the customer loss)</strong>. The first units of an item about to run out are worth a lot; the last units of a well-stocked item are worth little.</p>
+  <p>A mathematical solver (HiGHS) then picks the units with the highest total value, without going over the budget and without any supplier order under the minimum.</p>
+  <p class="helper-text">Customer loss counts as {{ '%g' % settings.customer_loss_percent }}% of the sale price, and the order horizon is the lead time plus {{ settings.target_cover_days }} days of cover. Change them in <a href="{{ url_for('analysis_settings') }}">settings</a>.</p>
+  {% endif %}
+</section>
+{% endblock %}

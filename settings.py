@@ -29,6 +29,8 @@ class AnalysisSettings:
     correct_stockouts: bool = True
     recency_half_life_days: int = 30
     protect_volume_items: bool = True
+    customer_loss_percent: float = 20.0
+    supplier_min_order: float = 0.0
     # [{"kind": "supplier" | "category", "name": "...", "days": 3}]
     lead_time_overrides: list[dict[str, Any]] = field(default_factory=list)
 
@@ -143,6 +145,12 @@ SETTING_FIELDS = [
                  "الكميات اللي هتنتهي خلال المدة دي قبل ما تتباع بتتحسب خسارة متوقعة.", "Units expiring within this window before they sell count as expected loss.", 14, 1095),
     SettingField("thin_margin_percent", "profit", "هامش ضعيف لو أقل من", "Thin margin below",
                  "الأصناف الأكثر مبيعاً بهامش أقل من كده بتظهر في الملاحظات.", "Best sellers under this margin are flagged.", 0, 100, 0.5, "%", "%"),
+    SettingField("customer_loss_percent", "profit", "خسارة الزبون لما الصنف يخلص", "Customer loss when an item runs out",
+                 "لما الزبون ميلاقيش الصنف ممكن ميرجعش. الرقم ده نسبة من سعر البيع بتتحسب خسارة فوق الربح الضايع، في خطة الشراء بالميزانية. 0 يعني الربح الضايع بس.",
+                 "A customer who does not find the item may not come back. This share of the sale price counts as a loss on top of the lost profit, in the budget purchase plan. 0 counts lost profit only.", 0, 500, 1, "%", "%"),
+    SettingField("supplier_min_order", "supply", "أقل طلبية عند المورد", "Supplier minimum order",
+                 "في خطة الشراء بالميزانية: طلبية المورد يا إما متتعملش، يا إما تكون بالقيمة دي على الأقل. 0 يعني مفيش حد أدنى. الأصناف اللي مالهاش مورد مش بتتأثر.",
+                 "In the budget purchase plan, an order to a supplier is either skipped or at least this value. 0 means no minimum. Items without a supplier are not affected.", 0, 10_000_000, 50, "بالعملة", "in currency"),
     SettingField("correct_stockouts", "forecast", "صحّح أيام النقص", "Correct for stockout days",
                  "لما الصنف كان ناقص، الأيام دي متتحسبش ضمن معدل البيع. بيشتغل مع ملفات الفواتير.", "Days the item was out of stock are excluded from its sales rate. Works with invoice files.", kind="bool"),
     SettingField("recency_half_life_days", "forecast", "وزن الأيام الأخيرة", "Recent-days weight (half-life)",

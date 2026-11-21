@@ -213,3 +213,34 @@ def test_abc_page_shows_quantity_and_profit_groups_and_gmroi(client):
     assert links
     product = client.get(links[0].replace("&amp;", "&")).data.decode()
     assert "GMROI" in product
+
+
+def test_budget_plan_page_and_excel(client):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    submit_review(client, upload(client, [SAMPLES / "D_chain_multi_branch.xlsx"]))
+    assert "/plan" in client.get("/actions").data.decode()
+    page = client.get("/plan").data.decode()
+    assert 'name="budget"' in page
+    full = float(re.search(r"(?:الطلبيات المقترحة كلها بـ|All suggested orders cost) ([\d,]+)", page).group(1).replace(",", ""))
+    assert full > 0
+    budget = int(full / 3)
+    page = client.get(f"/plan?budget={budget}&min_order=0").data.decode()
+    assert "Postponed, and why" in page or "اتأجل، وليه" in page
+    assert "Compared with buying in the usual order" in page or "مقارنة بالشراء بالترتيب العادي" in page
+    response = client.get(f"/plan.xlsx?budget={budget}&min_order=0")
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.data))
+    spent = 0.0
+    for sheet in workbook.worksheets[:-1]:
+        totals = [row for row in sheet.iter_rows(values_only=True) if row[1] in ("Total", "الإجمالي")]
+        spent += totals[0][5]
+    assert 0 < spent <= budget
+    assert workbook.worksheets[-1].title in ("Postponed", "اتأجل") and workbook.worksheets[-1].max_row > 1
+    # A budget above the total buys everything.
+    assert ("covers every order" in client.get(f"/plan?budget={int(full) + 10}").data.decode()
+            or "الميزانية تكفي كل الطلبيات" in client.get(f"/plan?budget={int(full) + 10}").data.decode())
+    # Without a budget the Excel link sends back to the form.
+    assert client.get("/plan.xlsx").status_code == 302
